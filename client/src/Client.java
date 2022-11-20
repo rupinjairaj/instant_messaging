@@ -16,10 +16,10 @@ public class Client {
         BufferedReader stdIn = new BufferedReader(new InputStreamReader(System.in));
         String message;
 
-        while ((message = stdIn.readLine()) != null) {
+        SocketChannel socketChannel = SocketChannel.open(new InetSocketAddress("localhost", 7000));
+        logger.log(Level.INFO, "Client running...");
 
-            SocketChannel socketChannel = SocketChannel.open(new InetSocketAddress("localhost", 7000));
-            logger.log(Level.INFO, "Client running...");
+        while ((message = stdIn.readLine()) != "bye") {
 
             ByteBuffer buffer = ByteBuffer.wrap(message.getBytes());
             socketChannel.write(buffer);
@@ -40,10 +40,9 @@ public class Client {
                 buffer.flip();
                 logger.log(Level.INFO, "Client received '" + StandardCharsets.UTF_8.newDecoder().decode(buffer));
             }
-
-            socketChannel.close();
-            logger.log(Level.INFO, "Client disconnected");
         }
+        socketChannel.close();
+        logger.log(Level.INFO, "Client disconnected");
     }
 
 }

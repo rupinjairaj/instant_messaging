@@ -13,7 +13,7 @@ import java.util.logging.Logger;
 public class Server {
 
     public static boolean active = true;
-    private static Logger logger = Logger.getLogger("com.instant_messaging");
+    private static Logger logger = Logger.getLogger("com.instant_messaging.server");
 
     public static void main(String[] args) throws Exception {
 
@@ -40,14 +40,14 @@ public class Server {
                 }
 
                 if (key.isReadable()) {
-                    keysIterator.remove();
                     read(selector, key);
                 }
 
                 if (key.isWritable()) {
-                    keysIterator.remove();
-                    write(key);
+                    write(selector, key);
                 }
+
+                keysIterator.remove();
             }
         }
 
@@ -85,11 +85,12 @@ public class Server {
         socketChannel.register(selector, SelectionKey.OP_WRITE, buffer);
     }
 
-    private static void write(SelectionKey key) throws IOException {
+    private static void write(Selector selector, SelectionKey key) throws IOException {
         SocketChannel socketChannel = (SocketChannel) key.channel();
         ByteBuffer buffer = (ByteBuffer) key.attachment();
         socketChannel.write(buffer);
-        socketChannel.close();
+
+        socketChannel.register(selector, SelectionKey.OP_READ);
 
         buffer.flip();
         byte[] bytes = new byte[buffer.limit()];
@@ -97,6 +98,7 @@ public class Server {
 
         String message = new String(bytes, StandardCharsets.UTF_8);
         logger.log(Level.INFO, "Server sent: " + message);
+        buffer.clear();
     }
 
 }
