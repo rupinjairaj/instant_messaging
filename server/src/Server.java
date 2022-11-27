@@ -22,7 +22,7 @@ public class Server {
     public static boolean active = true;
     private static Logger logger = Logger.getLogger("com.instant_messaging.server");
 
-    private static Map<Integer, ClientInfo> clientStore = new HashMap<>();
+    private static Map<Integer, String> clientSessionKey = new HashMap<>();
     private static Map<Integer, String> clientPublicKey = new HashMap<>() {
         {
             put(0, "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAy0gRSfyb7d8S7KjUYyQhU/c8xO8FU3l5L8em1dtpQDlXWwBzmbgAwjv4DJ0Zv/sDjjfBfGo8mnseSwEQ8kTzi9inWx7YgkSjB38KqsskLngEdtVc1gK9T1BcyZV6rlG8Qte887rx5RdekY0L4CTadlwmVH/kYbF/ClhZryetEbsH6/tcl6vRSuI/GSms5w7hEYmEAMjjD5XO9lW6gHkhg5qB+9J2bB2GIQLEjU+UKquamyTeUQBk4+agQfiqlHOoOC1mp46U6X+yMVY5IktmyNRWWWbPyexmIoS7PVnuWeJ33OyBnNZhdruZ7s3UeBL/YRaSm3LqjQImQYyV8VlI6wIDAQAB");
@@ -30,19 +30,11 @@ public class Server {
             put(2, "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0oWXHNpebiYuCVf5kRuG0PK7OnCES6KKoDINr/bbtxxCUuyWekweNlF9kAxTDjU1p85ZKqbuiFYb8xtz/9mhPvoDqVPRJoxs1Bekx/EiUP9jl1JJ10YjUhNGzdUwj/JbBsuY2UrqVRLObiEs7wAAhCKuimGsTZiPHufn75/++qv2YJ0OLp2i30nZX7aAzvE85XbIEK9WLffjBrdUXP5tl2jlmk0ljztiwMruNA7FUB3RBbklElp/6k74gbd9URv0vCWysgnnZL/mtgKOcthHXR8RHH+GaLMF9dCWrZkpy7u0UlvoRRXdWD0pWu/MR9cbBMwCz7SBPDp72txGNAe9CwIDAQAB");
         }
     };
-
-    public static synchronized void storeClientInfo(String clientInfo) throws IOException {
-
-        // Socket sock = socketChannel.socket();
-        // InetAddress addr = sock.getInetAddress();
-        // int port = sock.getPort();
-        // String clientKey = addr.toString() + ":" + Integer.toString(port);
-        // clientStore.put(clientInfo., socketChannel);
-    }
+    private static Map<Integer, String> clientHostName = new HashMap<>();
+    private static Map<Integer, String> clientPort = new HashMap<>();
+    private static Map<Integer, Boolean> clientStatus = new HashMap<>();
 
     public static void main(String[] args) throws Exception {
-
-        clientStore = new HashMap<>();
 
         logger.log(Level.INFO, "Starting up server...");
         ServerSocketChannel serverSocketChannel = ServerSocketChannel.open();
@@ -113,20 +105,20 @@ public class Server {
             return;
         }
 
+        int clientID;
         switch (payload[1]) {
             case "0":
                 // String payload = "|0|" + clientID + "|" + randomNumber + "|" +
                 // signedRandomNumber + "|" + hostName + "|" + port;
-                int clientID = Integer.parseInt(payload[2]);
+                clientID = Integer.parseInt(payload[2]);
                 String randomNumber = payload[3];
                 String signedRandomNumber = payload[4];
                 String hostName = payload[5];
-                int port = Integer.parseInt(payload[6]);
+                String port = payload[6];
                 if (Crypto.rsaVerify(randomNumber, signedRandomNumber,
                         Crypto.getPublicKey(clientPublicKey.get(clientID)))) {
                     // generate a session key here
                     Key sessionKey = Crypto.generateSessionKey();
-                    IvParameterSpec iv = Crypto.generateIv();
 
                     PublicKey pu = Crypto.getPublicKey(clientPublicKey.get(clientID));
 
@@ -137,15 +129,25 @@ public class Server {
                     // String payload = "|0|" + encryptedSessionKey + "|1|";
                     String response = encryptedSessionKey + "|" + "randomNumberEncrypted";
                     message = Message.getS2CAuthResMsg(response);
-
-                    // TODO: update in-memory client info here
+                    clientSessionKey.put(clientID, plainText);
+                    clientHostName.put(clientID, hostName);
+                    clientPort.put(clientID, port);
+                    clientStatus.put(clientID, true);
                 } else {
                     message = Message.getS2CAuthResMsg("failed");
                 }
                 break;
             case "1":
-                String[] peerIDs = { "" };
-                message = Message.getS2CPeerListResMsg(peerIDs);
+                clientID = Integer.parseInt(payload[2]);
+
+                StringBuilder sb = new StringBuilder();
+                for (Integer c_ID : clientStatus.keySet()) {
+                    if (clientStatus.get(c_ID)) {
+                        sb.append(c_ID + "|");
+                    }
+                }
+                String clientList = sb.toString();
+                message = Message.getS2CPeerListResMsg(clientList, clientSessionKey.get(clientID));
                 break;
             case "2":
                 message = Message.getS2CPeerSessionResMsg("clientID1", "clientID2", "sessionKey");

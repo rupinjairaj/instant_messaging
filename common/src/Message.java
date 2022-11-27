@@ -1,3 +1,10 @@
+import java.security.Key;
+import java.util.Base64;
+
+import javax.crypto.SecretKey;
+import javax.crypto.spec.IvParameterSpec;
+import javax.crypto.spec.SecretKeySpec;
+
 public class Message {
 
     /**
@@ -49,8 +56,8 @@ public class Message {
         return payload;
     }
 
-    public static String getC2SPeerListReqMsg(String[] peerIdList) {
-        return "|1";
+    public static String getC2SPeerListReqMsg(int clientID) {
+        return "|1|" + clientID;
     }
 
     public static String getC2SPeerSessionReqMsg(String peerID) {
@@ -70,9 +77,12 @@ public class Message {
         return "|3|" + message;
     }
 
-    public static String getS2CPeerListResMsg(String[] peerIDs) {
-        var message = String.join("|", peerIDs);
-        return "|4|" + message;
+    public static String getS2CPeerListResMsg(String peerIDs, String base64EncodeSessionKey) throws Exception {
+        IvParameterSpec iv = Crypto.generateIv();
+        byte[] decodedKey = Base64.getDecoder().decode(base64EncodeSessionKey);
+        SecretKey originalKey = new SecretKeySpec(decodedKey, 0, decodedKey.length, "AES");
+        String payload = Crypto.rollingEncrypt(peerIDs, iv, originalKey);
+        return "|4|" + payload + "|" + Base64.getEncoder().encodeToString(iv.getIV());
     }
 
     public static String getS2CPeerSessionResMsg(String clientID1, String clientID2, String sessionKey) {

@@ -76,7 +76,6 @@ public class Crypto {
 		byte[] initVec = iv.getIV();
 
 		List<byte[]> plainTextChunks = splitArray(plainTextBytes, 32);
-		System.out.println(plainTextChunks);
 
 		ByteArrayOutputStream cipherByteStream = new ByteArrayOutputStream();
 
@@ -97,7 +96,6 @@ public class Crypto {
 		byte[] initVec = iv.getIV();
 
 		List<byte[]> cipherTextChunks = splitArray(cipherTextBytes, 32);
-		System.out.println(cipherTextChunks);
 
 		ByteArrayOutputStream plaintextByteStream = new ByteArrayOutputStream();
 
@@ -109,7 +107,7 @@ public class Crypto {
 			plaintextByteStream.write(p_i);
 		}
 
-		return plaintextByteStream.toString();
+		return Base64.getEncoder().encodeToString(plaintextByteStream.toByteArray());
 	}
 
 	public static KeyPair generateKeyPair() throws Exception {

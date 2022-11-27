@@ -1,3 +1,7 @@
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
@@ -5,9 +9,14 @@ import java.nio.channels.SocketChannel;
 import java.nio.charset.StandardCharsets;
 import java.security.PrivateKey;
 import java.security.SecureRandom;
+import java.util.Base64;
 import java.util.Iterator;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+
+import javax.crypto.SecretKey;
+import javax.crypto.spec.IvParameterSpec;
+import javax.crypto.spec.SecretKeySpec;
 
 public class Client {
 
@@ -24,28 +33,45 @@ public class Client {
     private static String serverHostName = "localhost";
     private static int serverPort = 7000;
 
+    private static SocketChannel serverSocketChannel;
+
+    public static boolean establishConnection(String address, int port) throws Exception {
+
+        try {
+            serverSocketChannel = SocketChannel.open(new InetSocketAddress(address, port));
+            serverSocketChannel.configureBlocking(false);
+            logger.log(Level.INFO, "Connection established with the server.");
+            return true;
+        } catch (IOException e) {
+            logger.log(Level.SEVERE,
+                    "An error occurred while establishing the SocketChannel to the server " + e.getMessage());
+            return false;
+        }
+
+    }
+
     public static void main(String[] args) throws Exception {
 
         SecureRandom random = new SecureRandom();
 
         Selector selector = Selector.open();
-        var serverHandler = new ServerHandler();
-        if (!serverHandler.establishConnection(Client.serverHostName,
+        if (!establishConnection(Client.serverHostName,
                 Client.serverPort)) {
             return;
         }
 
-        serverHandler.serverSocketChannel.register(selector, SelectionKey.OP_READ);
+        serverSocketChannel.register(selector, SelectionKey.OP_READ);
 
         int ranNum = random.nextInt();
         String ranNumSign = Crypto.rsaSign(String.valueOf(ranNum), Crypto.getPrivateKey(clientPrivateKey));
 
-        if (!serverHandler.sendAuthMessage(
-                Message.getC2SAuthMsg(Client.clientID, Client.hostName, Client.port, ranNum, ranNumSign))) {
-            return;
-        }
+        String sessionKeyReqPayload = Message.getC2SAuthMsg(Client.clientID, Client.hostName, Client.port, ranNum,
+                ranNumSign);
+        serverSocketChannel.write(ByteBuffer.wrap(sessionKeyReqPayload.getBytes()));
 
-        while (true) {
+        while (true)
+
+        {
             int selected = selector.select();
             System.out.println("Selected: " + selected + " key(s)");
 
@@ -62,7 +88,7 @@ public class Client {
                 }
 
                 if (key.isWritable()) {
-
+                    write(selector, key);
                 }
 
                 keysIterator.remove();
@@ -98,10 +124,23 @@ public class Client {
                 String cipherText = payload[2];
                 PrivateKey pr = Crypto.getPrivateKey(clientPrivateKey);
                 String plainText = Crypto.rsaDecrypt(cipherText, pr);
-                clientServerSessionKey = plainText;
+                clientServerSessionKey = Base64.getEncoder().encodeToString(plainText.getBytes());
                 System.out.println("Session key obtained: " + plainText);
+                message = Message.getC2SPeerListReqMsg(clientID);
                 break;
             case "4":
+                String cipherPeerListText = payload[2];
+                String iv = payload[3];
+                byte[] iv_byte = Base64.getDecoder().decode(iv);
+                byte[] decodedKey = Base64.getDecoder().decode(clientServerSessionKey);
+                SecretKey clientServerKey = new SecretKeySpec(decodedKey, 0, decodedKey.length, "AES");
+                String plainTextPeerList = Crypto.rollingDecrypt(cipherPeerListText, new IvParameterSpec(iv_byte), clientServerKey);
+                System.out.println("Peer List Obtained: " + plainTextPeerList);
+
+                // get user input here
+                BufferedReader reader = new BufferedReader(new InputStreamReader(System.in));
+                String input = reader.readLine();
+                
                 break;
             case "5":
                 break;
@@ -112,7 +151,14 @@ public class Client {
             default:
                 break;
         }
+        socketChannel.register(selector, SelectionKey.OP_WRITE, ByteBuffer.wrap(message.getBytes()));
+    }
 
+    public static void write(Selector selector, SelectionKey key) throws Exception {
+        SocketChannel socketChannel = (SocketChannel) key.channel();
+        ByteBuffer buffer = (ByteBuffer) key.attachment();
+        socketChannel.write(buffer);
+        socketChannel.register(selector, SelectionKey.OP_READ);
     }
 
 }
