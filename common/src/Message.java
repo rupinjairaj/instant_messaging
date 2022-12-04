@@ -1,4 +1,10 @@
+import java.security.PrivateKey;
+import java.security.PublicKey;
+import java.sql.Timestamp;
+import java.time.Instant;
 import java.util.Base64;
+import java.util.HashMap;
+import java.util.Map;
 
 import javax.crypto.SecretKey;
 import javax.crypto.spec.IvParameterSpec;
@@ -6,50 +12,47 @@ import javax.crypto.spec.IvParameterSpec;
 public class Message {
 
     /**
-     * payload pattern:
-     * ** {author}|{messageType}
-     * 
-     * author: client/server
-     * messageType:
+     * payload pattern for client to server communication:
+     * |messageTypeCode|clientId|[...|...|]
+     * supported messageTypeCode:
      * ** 0 - auth
+     * **** auth message request payload:
+     * |0|clientId|randomNumber|signedRandomNumber]hostname|signedHostName|port|signedPort|
+     * **** auth message response payload:
+     * |0|encrypted(randomNumber-1)|clientPublicKey(sessionKey)|iv|hash(sessionKey|payload|sessionKey)|
+     * 
      * ** 1 - requesting client list
-     * ** 2 - requesting session with client
-     * ** 3 - server acknowledges auth // server response to 0
-     * ** 4 - server responds with client list // server response to 1
-     * ** 5 - server responds with session key for 2 clients // server response to 2
-     * ** 6 - client connects with peer and sends session key
-     * ** 7 - client to client messages
+     * **** client list request payload:
+     * |1|clientId|
+     * **** client list response payload:
+     * |1|encryptedClientList|iv|hash(sessionKey|payload|sessionKey)|
      * 
-     * for messageType 0
-     * |0|randomNumber|clientID|clientHostName|clientIncomingPort
+     * ** 2 - requesting server for p2p session info
+     * **** client p2p session info request:
+     * |2|clientId|encryptedPeerId|iv|hash(sessionKey|payload|sessionKey)
+     * **** server p2p session info response:
+     * |2|sourceClientEncrypt(incomingIv|destPeerId|destHostName|destHostPort|p2pSessionKey|destPeerTicket|destIv)|sourceIv|hash(sessionKey|payload|sessionKey)|
+     * destPeerTicket -
+     * destClientEncrypt(p2pSessionKey|sourcePeerId|expirationTime)
+     * **** peer to peer ticket:
+     * |2|ticketForPeer|iv|p2pSessionKeyEncrypted(timestamp)|timeEncIv
      * 
-     * for messageType 1
-     * |1|
+     * ** 3 - peer's response to peer's challenge
+     * |3|p2pSessionKeyEncrypt(originalChallenge+1)|iv
      * 
-     * for messageType 2
-     * |2|fromClientID|toClientID
-     * 
-     * for messageType 3
-     * |3|isAuthSuccess
-     * 
-     * for messageType 4
-     * |4|clientID1|clientID2|...
-     * 
-     * for messageType 5
-     * |5|clientID1|clientID2|base64SessionKey|
-     * 
-     * for messageType 6
-     * |6|clientID1|clientID2|sessionKey|destPort|destClientHostName
-     * 
-     * for messageType 7
-     * |7|clientID1|clienID2|chatMessage
+     * ** 4 - p2p chat messages:
+     * |4|encChatMsg|iv|checkSum;
      */
     String payload;
 
     // client payloads
-    public static String getC2SAuthMsg(int clientID, String hostName, int port,
-            int randomNumber, String signedRandomNumber) {
-        String payload = "|0|" + clientID + "|" + randomNumber + "|" + signedRandomNumber + "|" + hostName + "|" + port;
+    public static String getC2SAuthMsg(int clientID, String hostName, int port, int randomNumber, PrivateKey key) {
+        // |0|clientId|randomNumber|signedRandomNumber]hostname|signedHostName|port|signedPort
+        String ranNumSign = Crypto.rsaSign(String.valueOf(randomNumber), key);
+        String signedHostName = Crypto.rsaSign(hostName, key);
+        String signedHostPort = Crypto.rsaSign(String.valueOf(port), key);
+        String payload = "|0|" + clientID + "|" + randomNumber + "|" + ranNumSign + "|" + hostName + "|"
+                + signedHostName + "|" + port + "|" + signedHostPort + "|";
         return payload;
     }
 
@@ -58,38 +61,109 @@ public class Message {
     }
 
     public static String getC2SPeerSessionReqMsg(int clientID, String peerID, SecretKey sessionKey) {
+        // |2|clientId|encryptedPeerId|iv|hash(sessionKey|payload|sessionKey)
         IvParameterSpec iv = Crypto.generateIv();
-        String cipherText = Crypto.rollingEncrypt(peerID, iv, sessionKey);
-        return "|2|" + clientID + "|" + cipherText + "|" + Base64.getEncoder().encodeToString(iv.getIV());
+        String peerIdCipherText = Crypto.rollingEncrypt(peerID, iv, sessionKey);
+        String base64IvParameterSpec = Base64.getEncoder().encodeToString(iv.getIV());
+        String responsePayload = "|2|" + clientID + "|" + peerIdCipherText + "|" + base64IvParameterSpec;
+        byte[] checkSum = Crypto.generateCheckSum(sessionKey.getEncoded(), responsePayload.getBytes());
+        String base64EncodedCheckSum = Base64.getEncoder().encodeToString(checkSum);
+        return responsePayload + "|" + base64EncodedCheckSum;
     }
 
-    // TODO: encrypt this payload
-    public static String getP2PSessionMsg(int clientID, String ticketForPeer) {
-        return "|6|" + clientID + "|" + ticketForPeer;
+    public static String getP2PSessionMsg(String ticketForPeer, String iv, SecretKey p2pSecretKey,
+            long p2pTime) {
+        // |2|ticketForPeer|iv|p2pSessionKeyEncrypted(timestamp)|timeEncIv
+        IvParameterSpec ivParameterSpec = Crypto.generateIv();
+        String p2pTimeEnc = Crypto.aesEncrypt(Long.toString(p2pTime), ivParameterSpec, p2pSecretKey);
+        return "|2|" + ticketForPeer + "|" + iv + "|" + p2pTimeEnc + "|"
+                + Base64.getEncoder().encodeToString(ivParameterSpec.getIV());
     }
 
-    // TODO: encrypt this payload
-    public static String getP2PChatMsg(String chatMessage) {
-        return "|7|" + chatMessage;
+    public static String getP2PChallengeResMsg(long p2pTimePlusOne, SecretKey p2pSecretKey) {
+        // |3|p2pSessionKeyEncrypt(originalChallenge+1)|iv
+        IvParameterSpec ivParameterSpec = Crypto.generateIv();
+        String p2pTimeEnc = Crypto.aesEncrypt(Long.toString(p2pTimePlusOne), ivParameterSpec, p2pSecretKey);
+        System.out.println("LOOK HERE!!!!!!! " + p2pTimeEnc);
+        return "|3|" + p2pTimeEnc + "|" + Base64.getEncoder().encodeToString(ivParameterSpec.getIV());
+    }
+
+    public static String getP2PChatMsg(String chatMessage, SecretKey p2pKey) {
+        // |4|encChatMsg|iv|checkSum
+        IvParameterSpec ivParameterSpec = Crypto.generateIv();
+        byte[] checkSumByte = Crypto.generateCheckSum(p2pKey.getEncoded(), chatMessage.getBytes());
+        String checkSum = Base64.getEncoder().encodeToString(checkSumByte);
+        String encChatMsg = Crypto.rollingEncrypt(chatMessage, ivParameterSpec, p2pKey);
+        return "|4|" + encChatMsg + "|" + Base64.getEncoder().encodeToString(ivParameterSpec.getIV()) + "|" + checkSum;
     }
 
     // server payloads
-    public static String getS2CAuthResMsg(String message) {
-        return "|3|" + message;
+    public static String getS2CAuthResMsg(int randomNumber, PublicKey key,
+            Map<Integer, SecretKey> clientSessionKey, int clientID) {
+
+        // |messageTypeCode|encrypted(randomNumber-1)|clientPublicKey(sessionKey)|iv|hash(sessionKey|payload|sessionKey)|
+        // generate a session key here for client-server communications
+        SecretKey sessionKey = Crypto.generateSessionKey();
+        clientSessionKey.put(clientID, sessionKey);
+        // Encrypt the sessionKey with the client's public key
+        String base64EncodedSessionKey = Base64.getEncoder().encodeToString(sessionKey.getEncoded());
+        System.out.println("Session key: " + base64EncodedSessionKey); // TODO: remove this
+        String encryptedSessionKey = Crypto.rsaEncrypt(base64EncodedSessionKey, key);
+        IvParameterSpec iv = Crypto.generateIv();
+        String randomNumMinus1Encrypted = Crypto.aesEncrypt(String.valueOf(randomNumber - 1),
+                iv,
+                sessionKey);
+        String base64IvParameterSpec = Base64.getEncoder().encodeToString(iv.getIV());
+        String responsePayload = "|0|" + randomNumMinus1Encrypted + "|" + encryptedSessionKey + "|"
+                + base64IvParameterSpec;
+        byte[] checkSum = Crypto.generateCheckSum(sessionKey.getEncoded(), responsePayload.getBytes());
+        String base64EncodedCheckSum = Base64.getEncoder().encodeToString(checkSum);
+        return responsePayload + "|" + base64EncodedCheckSum;
     }
 
     public static String getS2CPeerListResMsg(String peerIDs, SecretKey sessionKey) {
+        // |1|encryptedClientList|iv|hash(sessionKey|payload|sessionKey)
         IvParameterSpec iv = Crypto.generateIv();
         String peerIdCipherText = Crypto.rollingEncrypt(peerIDs, iv, sessionKey);
-        return "|4|" + peerIdCipherText + "|" + Base64.getEncoder().encodeToString(iv.getIV());
+        String base64IvParameterSpec = Base64.getEncoder().encodeToString(iv.getIV());
+        String responsePayload = "|1|" + peerIdCipherText + "|" + base64IvParameterSpec;
+        byte[] checkSum = Crypto.generateCheckSum(sessionKey.getEncoded(), responsePayload.getBytes());
+        String base64EncodedCheckSum = Base64.getEncoder().encodeToString(checkSum);
+        return responsePayload + "|" + base64EncodedCheckSum;
     }
 
-    public static String getS2CPeerSessionResMsg(int clientID1, int clientID2, SecretKey srcClientSessionKey,
-            SecretKey destClientSessionKey, String desClientPort, String destClientHostName) {
-        SecretKey sessionKey = Crypto.generateSessionKey();
-        String base64EncodedSessionKey = Base64.getEncoder().encodeToString(sessionKey.getEncoded());
-        return "|5|" + clientID1 + "|" + clientID2 + "|" + base64EncodedSessionKey + "|" + desClientPort + "|"
-                + destClientHostName; // TODO: Encrypt this
+    public static String getS2CPeerSessionResMsg(int sourcePeerId, int destPeerId, SecretKey srcClientSessionKey,
+            SecretKey destClientSessionKey, String destPeerPort, String destPeerHostName, String incomingIv) {
+
+        // |2|sourceClientEncrypt(incomingIv|destPeerId|destHostName|destHostPort|p2pSessionKey|destPeerTicket|destIv)|sourceIv|hash(sessionKey|payload|sessionKey)|
+        // destPeerTicket -
+        // destClientEncrypt(p2pSessionKey|sourcePeerId|expirationTime)
+
+        // -- Start building destPeerTicket
+        SecretKey p2pSessionKey = Crypto.generateSessionKey();
+        String base64EncodedSessionKey = Base64.getEncoder().encodeToString(p2pSessionKey.getEncoded());
+        Timestamp timestamp = new Timestamp(System.currentTimeMillis());
+        Instant instant = timestamp.toInstant();
+        long expirationTime = instant.toEpochMilli() + (long) (1000 * 60 * 10);
+        String ticketForDestPeer = base64EncodedSessionKey + "|" + sourcePeerId + "|" + expirationTime;
+        IvParameterSpec destPeerIv = Crypto.generateIv();
+        String encryptedTicketForDestPeer = Crypto.rollingEncrypt(ticketForDestPeer, destPeerIv, destClientSessionKey);
+        String finalDestTicket = encryptedTicketForDestPeer + "|"
+                + Base64.getEncoder().encodeToString(destPeerIv.getIV());
+        // -- End building destPeerTicket
+
+        IvParameterSpec sourceIv = Crypto.generateIv();
+        String sourcePeerRes = incomingIv + "|" + destPeerId + "|" + destPeerHostName + "|" + destPeerPort + "|"
+                + base64EncodedSessionKey + "|" + finalDestTicket;
+        System.out.println("Something fancy!!! " + sourcePeerRes);
+        String sourcePeerResEnc = Crypto.rollingEncrypt(sourcePeerRes, sourceIv, srcClientSessionKey);
+        byte[] checkSum = Crypto.generateCheckSum(srcClientSessionKey.getEncoded(), sourcePeerRes.getBytes());
+        String base64EncodedCheckSum = Base64.getEncoder().encodeToString(checkSum);
+
+        String finalResponse = "|2|" + sourcePeerResEnc + "|" + Base64.getEncoder().encodeToString(sourceIv.getIV())
+                + "|" + base64EncodedCheckSum;
+
+        return finalResponse;
     }
 
 }

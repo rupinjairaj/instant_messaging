@@ -7,10 +7,13 @@ import java.nio.channels.Selector;
 import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
 import java.nio.charset.StandardCharsets;
+import java.sql.Timestamp;
+import java.time.Instant;
 import java.util.Base64;
 import java.util.Iterator;
 
 import javax.crypto.SecretKey;
+import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 
 public class IncomingConnectionHandler implements Runnable {
@@ -19,11 +22,13 @@ public class IncomingConnectionHandler implements Runnable {
     private String hostName;
     private int port;
     private SecretKey peerToPeerSecretKey;
+    private SecretKey clientServerSecretKey;
     private int peerClientId;
 
-    public IncomingConnectionHandler(String hostName, int port) {
+    public IncomingConnectionHandler(String hostName, int port, SecretKey clientServerSecretKey) {
         this.hostName = hostName;
         this.port = port;
+        this.clientServerSecretKey = clientServerSecretKey;
     }
 
     @Override
@@ -85,41 +90,73 @@ public class IncomingConnectionHandler implements Runnable {
         String[] payload = message.split("\\|");
 
         switch (payload[1]) {
-            case "6":
+            case "2":
                 /**
                  * incoming message:
-                 * |6|clientID|ticketForPeer
+                 * |2|ticketForPeer|iv|p2pSessionKeyEncrypted(timestamp)|timeEncIv
                  */
-                String ticketForClient = payload[3];
-                System.out.println("Client received p2p session key: " + ticketForClient);
-                byte[] peerToPeerSecretKeyBytes = Base64.getDecoder().decode(ticketForClient);
+                String encryptedTicket = payload[2];
+                String ticketIv = payload[3];
+                byte[] ticketIvByte = Base64.getDecoder().decode(ticketIv);
+                System.out.println("Client received p2p session key: " + encryptedTicket);
+                String decryptedTicket = Crypto.rollingDecrypt(encryptedTicket, new IvParameterSpec(ticketIvByte),
+                        clientServerSecretKey);
+                // ticket - p2pSessionKey|sourcePeerId|expirationTime
+                String[] decryptedTicketList = decryptedTicket.split("\\|");
+                String base64EncodedP2PSessionKey = decryptedTicketList[0];
+                peerClientId = Integer.parseInt(decryptedTicketList[1]);
+                long expirationTime = Long.parseLong(decryptedTicketList[2]);
+                Timestamp timestamp = new Timestamp(System.currentTimeMillis());
+                Instant instant = timestamp.toInstant();
+                if (instant.toEpochMilli() > expirationTime) {
+                    return;
+                }
+                byte[] peerToPeerSecretKeyBytes = Base64.getDecoder().decode(base64EncodedP2PSessionKey);
                 // saving the client-server session key in-memory
                 this.peerToPeerSecretKey = new SecretKeySpec(peerToPeerSecretKeyBytes, 0,
                         peerToPeerSecretKeyBytes.length,
                         "AES");
-                message = "|7|aNewChallenge|responseToGivenChallenge|dataFromTicketForServer";
+                String p2pTimeEncrypted = payload[4];
+                String base64TimeIv = payload[5];
+                byte[] timeIvByte = Base64.getDecoder().decode(base64TimeIv);
+                String decryptedTime = Crypto.aesDecrypt(p2pTimeEncrypted, new IvParameterSpec(timeIvByte),
+                        peerToPeerSecretKey);
+                long p2pTime = Long.valueOf(decryptedTime);
+                // |3|p2pSessionKeyEncrypt(originalChallenge+1)|iv
+                message = Message.getP2PChallengeResMsg(p2pTime + 1, peerToPeerSecretKey);
                 socketChannel.register(localSelector, SelectionKey.OP_WRITE, ByteBuffer.wrap(message.getBytes()));
                 break;
-            case "8":
+            case "4":
                 /**
                  * incoming message:
-                 * |8|responseToANewChallenge
+                 * |4|encChatMsg|iv|checkSum
                  */
-                // verify response and if valid send the first message
-                message = "|8|sessionEstablished";
+
+                String encChat = payload[2];
+				String base64Iv = payload[3];
+				String chatCheckSum = payload[4]; // TODO: use this!
+				byte[] base64IvByte = Base64.getDecoder().decode(base64Iv);
+				String chatText = Crypto.rollingDecrypt(encChat, new IvParameterSpec(base64IvByte),
+						peerToPeerSecretKey);
+				System.out.println("Peer@" + peerClientId + ": " + chatText);
+				System.out.println("Enter your message: ");
+				chatText = waitAndHandleUserInput();
+                // |4|encChatMsg|iv|checkSum
+                message = Message.getP2PChatMsg(chatText, peerToPeerSecretKey);
                 socketChannel.register(localSelector, SelectionKey.OP_WRITE, ByteBuffer.wrap(message.getBytes()));
                 break;
-            case "9":
-                /**
-                 * incoming message:
-                 * |9|chatMessage
-                 */
-                // TODO: set the peerClientId to the value from the ticket
-                System.out.println("Peer@" + this.peerClientId + ": " + payload[2]);
-                System.out.println("Enter your message: ");
-                message = "|9|" + waitAndHandleUserInput();
-                socketChannel.register(localSelector, SelectionKey.OP_WRITE, ByteBuffer.wrap(message.getBytes()));
-                break;
+            // case "9":
+            // /**
+            // * incoming message:
+            // * |9|chatMessage
+            // */
+            // // TODO: set the peerClientId to the value from the ticket
+            // System.out.println("Peer@" + this.peerClientId + ": " + payload[2]);
+            // System.out.println("Enter your message: ");
+            // message = "|9|" + waitAndHandleUserInput();
+            // socketChannel.register(localSelector, SelectionKey.OP_WRITE,
+            // ByteBuffer.wrap(message.getBytes()));
+            // break;
             default:
                 break;
         }

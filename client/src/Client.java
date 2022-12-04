@@ -54,11 +54,6 @@ public class Client {
         Thread incomingMessageHandlerThread = new Thread(incomingMessageHandler, "th_incomingMessageHandler");
         incomingMessageHandlerThread.start();
 
-        // setting up the client's incoming connection handler thread
-        IncomingConnectionHandler peerListener = new IncomingConnectionHandler(clientHostName, clientPort);
-        Thread listenerThread = new Thread(peerListener, "th_peerListener");
-        listenerThread.start();
-
     }
 
     public String waitAndHandleUserInput() throws Exception {

@@ -133,42 +133,40 @@ public class Server {
         String[] payload = message.split("\\|");
 
         int clientID = Integer.parseInt(payload[2]);
+        String checkSum;
+        String localCheckSum;
+        byte[] ivParameterSpecByte;
+        String ivParameterSpecString;
 
         switch (payload[1]) {
             case "0":
                 /**
                  * incoming message:
                  * |0|clientID|randomNumber|signedRandomNumber|hostName|port
+                 * |0|clientId|randomNumber|signedRandomNumber]hostname|signedHostName|port|signedPort
                  */
                 String randomNumber = payload[3];
                 String signedRandomNumber = payload[4];
                 String hostName = payload[5];
-                String port = payload[6];
-                // authenticate the client
-                if (!Crypto.rsaVerify(randomNumber, signedRandomNumber, clientPublicKey.get(clientID))) {
-                    message = Message.getS2CAuthResMsg("failed");
-                    break;
+                String signedHostName = payload[6];
+                String port = payload[7];
+                String signedHostPort = payload[8];
+                // If the message has been tampered with in anyway then the RSA verification
+                // will fail, thus preserving integrity of the payload.
+                if (!Crypto.rsaVerify(randomNumber, signedRandomNumber, clientPublicKey.get(clientID))
+                        && !Crypto.rsaVerify(hostName, signedHostName, clientPublicKey.get(clientID))
+                        && !Crypto.rsaVerify(port, signedHostPort, clientPublicKey.get(clientID))) {
+                    return;
                 }
 
-                // generate a session key here for client-server communications
-                SecretKey sessionKey = Crypto.generateSessionKey();
-
-                PublicKey pu = clientPublicKey.get(clientID);
-                // Encrypt the sessionKey with the client's public key
-                String base64EncodedSessionKey = Base64.getEncoder().encodeToString(sessionKey.getEncoded());
-                System.out.println("Session key: " + base64EncodedSessionKey);
-                String encryptedSessionKey = Crypto.rsaEncrypt(base64EncodedSessionKey, pu);
-                // server's response:
-                // |3|encryptedSessionKey|randomNumberEncrypted|base64IvParameterSpec
-                IvParameterSpec iv = Crypto.generateIv();
-                String randomNumEncrypted = Crypto.aesEncrypt(randomNumber, iv, sessionKey);
-                String base64IvParameterSpec = Base64.getEncoder().encodeToString(iv.getIV());
-                String response = encryptedSessionKey + "|" + randomNumEncrypted + "|" + base64IvParameterSpec;
-                message = Message.getS2CAuthResMsg(response);
-                clientSessionKey.put(clientID, sessionKey);
+                // start building server auth response:
+                // |messageTypeCode|encrypted(randomNumber-1)|clientPublicKey(sessionKey)|iv|hash(sessionKey|payload|sessionKey)|
+                message = Message.getS2CAuthResMsg(Integer.parseInt(randomNumber), clientPublicKey.get(clientID),
+                        clientSessionKey, clientID);
                 clientHostName.put(clientID, hostName);
                 clientPort.put(clientID, port);
                 clientStatus.put(clientID, true);
+                socketChannel.register(selector, SelectionKey.OP_WRITE, ByteBuffer.wrap(message.getBytes()));
                 break;
             case "1":
                 /**
@@ -177,27 +175,32 @@ public class Server {
                  */
                 StringBuilder sb = new StringBuilder();
                 for (Integer c_ID : clientStatus.keySet()) {
-                    if (clientStatus.get(c_ID)) {
+                    if (c_ID != clientID && clientStatus.get(c_ID)) {
                         sb.append(c_ID + "|");
                     }
                 }
                 String clientList = sb.toString();
+                // |1|encryptedClientList|iv|hash(sessionKey|payload|sessionKey)
                 message = Message.getS2CPeerListResMsg(clientList, clientSessionKey.get(clientID));
+                socketChannel.register(selector, SelectionKey.OP_WRITE, ByteBuffer.wrap(message.getBytes()));
                 break;
             case "2":
                 /**
                  * incoming message:
-                 * |2|clientID|encryptedPeerID|IV
+                 * |2|clientId|encryptedPeerId|iv|hash(sessionKey|payload|sessionKey)
                  */
                 int sourcePeerID = clientID;
                 String encryptedDestPeerID = payload[3];
-                String iv_str = payload[4];
-                byte[] iv_byte = Base64.getDecoder().decode(iv_str);
-                String destPeerIDStr = Crypto.rollingDecrypt(encryptedDestPeerID, new IvParameterSpec(iv_byte),
+                ivParameterSpecString = payload[4];
+                checkSum = payload[5];
+                ivParameterSpecByte = Base64.getDecoder().decode(ivParameterSpecString);
+                String destPeerIDStr = Crypto.rollingDecrypt(encryptedDestPeerID,
+                        new IvParameterSpec(ivParameterSpecByte),
                         clientSessionKey.get(clientID));
                 int destPeerID = Integer.parseInt(destPeerIDStr);
                 message = Message.getS2CPeerSessionResMsg(sourcePeerID, destPeerID, clientSessionKey.get(sourcePeerID),
-                        clientSessionKey.get(destPeerID), clientPort.get(destPeerID), clientHostName.get(destPeerID));
+                        clientSessionKey.get(destPeerID), clientPort.get(destPeerID), clientHostName.get(destPeerID), ivParameterSpecString);
+                socketChannel.register(selector, SelectionKey.OP_WRITE, ByteBuffer.wrap(message.getBytes()));
                 break;
             case "10":
                 /**
@@ -209,7 +212,6 @@ public class Server {
             default:
                 break;
         }
-        socketChannel.register(selector, SelectionKey.OP_WRITE, ByteBuffer.wrap(message.getBytes()));
     }
 
     private static void write(Selector selector, SelectionKey key) throws IOException {

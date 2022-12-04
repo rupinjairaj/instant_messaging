@@ -2,7 +2,6 @@ import java.security.KeyFactory;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.security.SecureRandom;
@@ -40,10 +39,49 @@ public class Crypto {
 		}
 	}
 
+	public static String aesEncrypt(String plainText, IvParameterSpec iv, SecretKey key) {
+		try {
+			Cipher cipher = Cipher.getInstance("AES/CBC/PKCS5Padding");
+			cipher.init(Cipher.ENCRYPT_MODE, key, iv);
+			byte[] cipherText = cipher.doFinal(plainText.getBytes());
+			return Base64.getEncoder().encodeToString(cipherText);
+		} catch (Exception e) {
+			System.out.println(e.getMessage());
+			return "";
+		}
+	}
+
+	public static String aesDecrypt(String cipherText, IvParameterSpec iv, SecretKey key) {
+		try {
+			Cipher cipher = Cipher.getInstance("AES/CBC/PKCS5Padding");
+			cipher.init(Cipher.DECRYPT_MODE, key, iv);
+			byte[] plainText = cipher.doFinal(Base64.getDecoder().decode(cipherText));
+			return new String(plainText);
+		} catch (Exception e) {
+			System.out.println(e.getMessage());
+			return "";
+		}
+	}
+
 	public static IvParameterSpec generateIv() {
 		byte[] iv = new byte[16];
 		new SecureRandom().nextBytes(iv);
 		return new IvParameterSpec(iv);
+	}
+
+	public static byte[] generateCheckSum(byte[] key, byte[] input) {
+		try {
+			ByteArrayOutputStream bStream = new ByteArrayOutputStream();
+			bStream.write(key);
+			bStream.write(input);
+			bStream.write(key);
+			byte[] valToHash = bStream.toByteArray();
+			MessageDigest messageDigest = MessageDigest.getInstance(SHA256_ALGO);
+			return messageDigest.digest(valToHash);
+		} catch (Exception e) {
+			System.out.println(e.getMessage());
+			return null;
+		}
 	}
 
 	public static byte[] generateHash(byte[] key, byte[] input) {
@@ -79,30 +117,6 @@ public class Crypto {
 			temp[i] = (byte) (a1[i] ^ a2[i]);
 		}
 		return temp;
-	}
-
-	public static String aesEncrypt(String plainText, IvParameterSpec iv, SecretKey key) {
-		try {
-			Cipher cipher = Cipher.getInstance("AES/CBC/PKCS5Padding");
-			cipher.init(Cipher.ENCRYPT_MODE, key, iv);
-			byte[] cipherText = cipher.doFinal(plainText.getBytes());
-			return Base64.getEncoder().encodeToString(cipherText);
-		} catch (Exception e) {
-			System.out.println(e.getMessage());
-			return "";
-		}
-	}
-
-	public static String aesDecrypt(String cipherText, IvParameterSpec iv, SecretKey key) {
-		try {
-			Cipher cipher = Cipher.getInstance("AES/CBC/PKCS5Padding");
-			cipher.init(Cipher.DECRYPT_MODE, key, iv);
-			byte[] plainText = cipher.doFinal(Base64.getDecoder().decode(cipherText));
-			return new String(plainText);
-		} catch (Exception e) {
-			System.out.println(e.getMessage());
-			return "";
-		}
 	}
 
 	public static String rollingEncrypt(String plainText, IvParameterSpec iv, SecretKey key) {

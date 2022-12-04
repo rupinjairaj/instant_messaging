@@ -6,12 +6,13 @@ import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
-import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
 import java.nio.charset.StandardCharsets;
 import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.security.SecureRandom;
+import java.sql.Timestamp;
+import java.time.Instant;
 import java.util.Base64;
 import java.util.Iterator;
 
@@ -26,6 +27,10 @@ public class IncomingMessageHandler implements Runnable {
 	private SecretKey clientServerSecretKey;
 	private SecretKey peerToPeerSecretKey;
 	private int peerClientId;
+	private String peerHostName;
+	private int peerHostPort;
+	private int clientServerCurrSecureRandomNumber;
+	private long p2pTime;
 
 	private int clientID;
 	private String serverHostName;
@@ -78,12 +83,10 @@ public class IncomingMessageHandler implements Runnable {
 			System.out.println(e.getMessage());
 		}
 
-		int ranNum = random.nextInt();
-		String ranNumSign = Crypto.rsaSign(String.valueOf(ranNum), clientPrivateKey);
+		clientServerCurrSecureRandomNumber = random.nextInt();
 
-		String sessionKeyReqPayload = Message.getC2SAuthMsg(this.clientID,
-				this.clientHostName, this.clientPort, ranNum,
-				ranNumSign);
+		String sessionKeyReqPayload = Message.getC2SAuthMsg(this.clientID, this.clientHostName, this.clientPort,
+				clientServerCurrSecureRandomNumber, clientPrivateKey);
 		try {
 			clientServerSocketChannel.write(ByteBuffer.wrap(sessionKeyReqPayload.getBytes()));
 		} catch (IOException e) {
@@ -185,38 +188,66 @@ public class IncomingMessageHandler implements Runnable {
 		String[] payload = message.split("\\|");
 
 		switch (payload[1]) {
-			case "3":
-				// incoming message:
-				// |3|encryptedSessionKey|randomNumberEncrypted|base64IvParameterSpec
-				String encryptedSessionKey = payload[2];
-				if (encryptedSessionKey.equals("failed")) {
-					System.out.println("The server failed to authenticate the client");
-					break;
-				}
-				String encryptedRandomNumber = payload[3];
+			case "0":
+				/**
+				 * incoming message:
+				 * |messageTypeCode|encrypted(randomNumber-1)|clientPublicKey(sessionKey)|iv|hash(sessionKey|payload|sessionKey)|
+				 */
+				String encryptedRandomNumberMinus1 = payload[2];
+				String encryptedSessionKey = payload[3];
 				String base64IvParameterSpec = payload[4];
+				String base64EncodedCheckSum = payload[5];
+
 				String sessionKey = Crypto.rsaDecrypt(encryptedSessionKey, clientPrivateKey);
-				byte[] clientServerKeyBytes = Base64.getDecoder().decode(sessionKey);
+
 				byte[] ivParameterSpecBytes = Base64.getDecoder().decode(base64IvParameterSpec);
+
+				byte[] clientServerKeyBytes = Base64.getDecoder().decode(sessionKey);
 				// saving the client-server session key in-memory
 				clientServerSecretKey = new SecretKeySpec(clientServerKeyBytes, 0, clientServerKeyBytes.length, "AES");
 				// decrypt the encryptedRandomNumber (check for freshness of the session key)
-				String decryptedRandomNumber = Crypto.aesDecrypt(encryptedRandomNumber,
+				String decryptedRandomNumber = Crypto.aesDecrypt(encryptedRandomNumberMinus1,
 						new IvParameterSpec(ivParameterSpecBytes), clientServerSecretKey);
+				if (Integer.parseInt(decryptedRandomNumber) != clientServerCurrSecureRandomNumber - 1) {
+					return;
+				}
+				String responsePayload = "|0|" + encryptedRandomNumberMinus1 + "|" + encryptedSessionKey + "|"
+						+ base64IvParameterSpec;
+				byte[] checkSum = Crypto.generateCheckSum(clientServerSecretKey.getEncoded(),
+						responsePayload.getBytes());
+				String checkSumForVerification = Base64.getEncoder().encodeToString(checkSum);
+				if (!checkSumForVerification.equals(base64EncodedCheckSum)) {
+					return;
+				}
+
+				// setting up the client's incoming connection handler thread
+				IncomingConnectionHandler peerListener = new IncomingConnectionHandler(clientHostName, clientPort,
+						clientServerSecretKey);
+				Thread listenerThread = new Thread(peerListener, "th_peerListener");
+				listenerThread.start();
 				System.out.println(
 						"Session key obtained: " + sessionKey + " decrypted random number: " + decryptedRandomNumber);
 				break;
-			case "4":
+			case "1":
 				/**
 				 * incoming message:
-				 * |4|peerIdCipherText|IV
+				 * |1|encryptedClientList|iv|hash(sessionKey|payload|sessionKey)
 				 */
 				String cipherPeerListText = payload[2];
 				String iv = payload[3];
-				byte[] iv_byte = Base64.getDecoder().decode(iv);
-				String plainTextPeerList = Crypto.rollingDecrypt(cipherPeerListText, new IvParameterSpec(iv_byte),
+				String base64EncodedClientListResponseCheckSum = payload[4];
+				byte[] ivByte = Base64.getDecoder().decode(iv);
+				String plainTextPeerList = Crypto.rollingDecrypt(cipherPeerListText, new IvParameterSpec(ivByte),
 						clientServerSecretKey);
-
+				String resPayload = "|1|" + cipherPeerListText + "|" + iv;
+				byte[] verifyClientListResponseCheckSumByte = Crypto.generateCheckSum(
+						clientServerSecretKey.getEncoded(),
+						resPayload.getBytes());
+				String verifyClientListResponseCheckSumString = Base64.getEncoder()
+						.encodeToString(verifyClientListResponseCheckSumByte);
+				if (!verifyClientListResponseCheckSumString.equals(base64EncodedClientListResponseCheckSum)) {
+					return;
+				}
 				String[] peerList = plainTextPeerList.split("\\|");
 				System.out.println("Here are the list of available peers:");
 				for (String peer : peerList) {
@@ -226,30 +257,48 @@ public class IncomingMessageHandler implements Runnable {
 				System.out.println("Please press the ID of the peer you wish to chat with:");
 				// get user input here
 				String selectedPeerID = waitAndHandleUserInput();
+				// |2|clientId|encryptedPeerId|iv|hash(sessionKey|payload|sessionKey)
 				message = Message.getC2SPeerSessionReqMsg(clientID, selectedPeerID, clientServerSecretKey);
 				this.registerWithMultiplexer(socketChannel, selector, SelectionKey.OP_WRITE,
 						ByteBuffer.wrap(message.getBytes()));
 				break;
-			case "5":
+			case "2":
 				/**
 				 * incoming message:
-				 * |5|clientID1|clientID2|base64EncodedSessionKey|desClientPort|destClientHostName
+				 * |2|sourceClientEncrypt(incomingIv|destPeerId|destHostName|destHostPort|p2pSessionKey|destPeerTicket|destIv)|sourceIv|hash(sessionKey|payload|sessionKey)|
+				 * destPeerTicket -
+				 * destClientEncrypt(p2pSessionKey|sourcePeerId|expirationTime)
 				 */
-				peerClientId = Integer.parseInt(payload[3]);
-				String encryptedPeerSessionKey = payload[4];
-				int peerPort = Integer.parseInt(payload[5]);
-				String peerHostName = payload[6];
+				String cipherText = payload[2];
+				String newIv = payload[3];
+				String newChecksum = payload[4]; // TODO: use this!
+				byte[] newIvByte = Base64.getDecoder().decode(newIv);
+
+				// incomingIv|destPeerId|destHostName|destHostPort|p2pSessionKey|destPeerTicket|destIv
+				String plainText = Crypto.rollingDecrypt(cipherText, new IvParameterSpec(newIvByte),
+						clientServerSecretKey);
+				String[] plainTextList = plainText.split("\\|");
+				peerClientId = Integer.parseInt(plainTextList[1]);
+				peerHostName = plainTextList[2];
+				peerHostPort = Integer.parseInt(plainTextList[3]);
+				String peerToPeerSessionKey = plainTextList[4];
+				byte[] peerToPeerSessionKeyBytes = Base64.getDecoder().decode(peerToPeerSessionKey);
+				peerToPeerSecretKey = new SecretKeySpec(peerToPeerSessionKeyBytes, 0, peerToPeerSessionKeyBytes.length,
+						"AES");
+				String destPeerTicket = plainTextList[5];
+				String destPeerIv = plainTextList[6];
 				// connect with the peer
 				try {
-					peerToPeerSocketChannel = SocketChannel.open(new InetSocketAddress(peerHostName, peerPort));
+					peerToPeerSocketChannel = SocketChannel.open(new InetSocketAddress(peerHostName, peerHostPort));
 					peerToPeerSocketChannel.configureBlocking(false);
 				} catch (IOException e) {
 					System.out.println(e.getMessage());
 				}
 				// send the session key payload
-				// TODO: extract the ticket for the peer and send it over
-				String ticketForPeer = encryptedPeerSessionKey;
-				message = Message.getP2PSessionMsg(clientID, ticketForPeer);
+				// |2|clientID|ticketForPeer|iv|p2pSessionKeyEncrypted(timestamp)|timeEncIv
+				Timestamp timestamp = new Timestamp(System.currentTimeMillis());
+				p2pTime = timestamp.toInstant().toEpochMilli();
+				message = Message.getP2PSessionMsg(destPeerTicket, destPeerIv, peerToPeerSecretKey, p2pTime);
 				this.registerWithMultiplexer(peerToPeerSocketChannel, selector, SelectionKey.OP_WRITE,
 						ByteBuffer.wrap(message.getBytes()));
 				break;
@@ -267,26 +316,50 @@ public class IncomingMessageHandler implements Runnable {
 			// peerToPeerSecretKeyBytes.length,
 			// "AES");
 			// break;
-			case "7":
+			case "3":
 				/**
 				 * incoming message:
-				 * |6|aNewChallenge|responseToChallenge|dataFromTicketForServer
+				 * |3|p2pSessionKeyEncrypt(originalChallenge+1)|iv
 				 */
-				message = "|8|responseToANewChallenge";
+				String challengeIv = payload[3];
+				byte[] challengeIvByte = Base64.getDecoder().decode(challengeIv);
+				String decryptedChallengeTime = Crypto.aesDecrypt(payload[2], new IvParameterSpec(challengeIvByte),
+						peerToPeerSecretKey);
+				System.out.println("LOOK HERE!!!!!!! " + decryptedChallengeTime);
+				if (p2pTime + 1 != Long.parseLong(decryptedChallengeTime)) {
+					return;
+				}
+
+				// TODO: tell the server you are busy
+				// message = "|10|" + clientID + "|busy";
+				// this.registerWithMultiplexer(clientServerSocketChannel, selector,
+				// SelectionKey.OP_WRITE,
+				// ByteBuffer.wrap(message.getBytes()));
+
+				// first chat message to peer
+				System.out.println("Enter your message: ");
+				String plainChatText = waitAndHandleUserInput();
+				// |4|encChatMsg|iv|checkSum
+				message = Message.getP2PChatMsg(plainChatText, peerToPeerSecretKey);
 				this.registerWithMultiplexer(socketChannel, selector, SelectionKey.OP_WRITE,
 						ByteBuffer.wrap(message.getBytes()));
-				message = "|10|" + clientID + "|busy";
-				this.registerWithMultiplexer(clientServerSocketChannel, selector, SelectionKey.OP_WRITE,
-						ByteBuffer.wrap(message.getBytes()));
 				break;
-			case "8":
+			case "4":
 				/**
 				 * incoming message:
-				 * |8|sessionEstablished
+				 * |4|encChatMsg|iv|checkSum
 				 */
-				System.out.println("Peer@" + peerClientId + ": " + payload[2]);
+				String encChat = payload[2];
+				String base64Iv = payload[3];
+				String chatCheckSum = payload[4]; // TODO: use this!
+				byte[] base64IvByte = Base64.getDecoder().decode(base64Iv);
+				String chatText = Crypto.rollingDecrypt(encChat, new IvParameterSpec(base64IvByte),
+						peerToPeerSecretKey);
+				System.out.println("Peer@" + peerClientId + ": " + chatText);
 				System.out.println("Enter your message: ");
-				message = "|9|" + waitAndHandleUserInput();
+				chatText = waitAndHandleUserInput();
+				// |4|encChatMsg|iv|checkSum
+				message = Message.getP2PChatMsg(chatText, peerToPeerSecretKey);
 				this.registerWithMultiplexer(socketChannel, selector, SelectionKey.OP_WRITE,
 						ByteBuffer.wrap(message.getBytes()));
 			default:
