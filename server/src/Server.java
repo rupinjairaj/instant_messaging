@@ -6,49 +6,75 @@ import java.nio.channels.Selector;
 import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
 import java.nio.charset.StandardCharsets;
-import java.security.Key;
+import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
-import java.util.logging.Level;
-import java.util.logging.Logger;
 
+import javax.crypto.SecretKey;
 import javax.crypto.spec.IvParameterSpec;
 
 public class Server {
 
     public static boolean active = true;
-    private static Logger logger = Logger.getLogger("com.instant_messaging.server");
 
-    private static Map<Integer, String> clientSessionKey = new HashMap<>();
-    private static Map<Integer, String> clientPublicKey = new HashMap<>() {
-        {
-            put(0, "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAy0gRSfyb7d8S7KjUYyQhU/c8xO8FU3l5L8em1dtpQDlXWwBzmbgAwjv4DJ0Zv/sDjjfBfGo8mnseSwEQ8kTzi9inWx7YgkSjB38KqsskLngEdtVc1gK9T1BcyZV6rlG8Qte887rx5RdekY0L4CTadlwmVH/kYbF/ClhZryetEbsH6/tcl6vRSuI/GSms5w7hEYmEAMjjD5XO9lW6gHkhg5qB+9J2bB2GIQLEjU+UKquamyTeUQBk4+agQfiqlHOoOC1mp46U6X+yMVY5IktmyNRWWWbPyexmIoS7PVnuWeJ33OyBnNZhdruZ7s3UeBL/YRaSm3LqjQImQYyV8VlI6wIDAQAB");
-            put(1, "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAteccIEYuNj7bK0jDZbxQWZS2Fb9zoqe3Fv8Wby4WhO7t3wVFo/CMkcpdHYYLb72IX1GhiInRYHty9F5sL7LGGPNXhl8/Eu8221XZcGOBmnv6ztoca3//XTED0or9F+f7A685NQdzFq+xOdE45tlX+Fpjx+PNB5COSZ1lI2CRVruSI1Wr8MVKzorx5J6bUtk/vd6BUmP2qlgmzTrDlcQ0p5i9wkuoUJ7o/mW5WXT7fEoRPRnFvYW84XOM9a62lidQZiuS67+0MINnD3BslK+HhTpKaFZKr0Kkpk6pks0WIjAhgc2nh4ciC+iUTKIACWe+n6L0zbroC/OjRlKrG7nbSQIDAQAB");
-            put(2, "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0oWXHNpebiYuCVf5kRuG0PK7OnCES6KKoDINr/bbtxxCUuyWekweNlF9kAxTDjU1p85ZKqbuiFYb8xtz/9mhPvoDqVPRJoxs1Bekx/EiUP9jl1JJ10YjUhNGzdUwj/JbBsuY2UrqVRLObiEs7wAAhCKuimGsTZiPHufn75/++qv2YJ0OLp2i30nZX7aAzvE85XbIEK9WLffjBrdUXP5tl2jlmk0ljztiwMruNA7FUB3RBbklElp/6k74gbd9URv0vCWysgnnZL/mtgKOcthHXR8RHH+GaLMF9dCWrZkpy7u0UlvoRRXdWD0pWu/MR9cbBMwCz7SBPDp72txGNAe9CwIDAQAB");
-        }
-    };
+    private static String hostName;
+    private static int port;
+    private static int numberOfClients;
+
+    private static PrivateKey serverPrivateKey;
+    // store session keys between clients and servers.
+
+    private static Map<Integer, SecretKey> clientSessionKey = new HashMap<>();
+    // an in-memory store of a client's public key.
+    private static Map<Integer, PublicKey> clientPublicKey = new HashMap<>();
+
     private static Map<Integer, String> clientHostName = new HashMap<>();
     private static Map<Integer, String> clientPort = new HashMap<>();
     private static Map<Integer, Boolean> clientStatus = new HashMap<>();
 
+    private static void parseArguments(String[] args) {
+        /**
+         * command line arguments order:
+         * localhost 3000
+         */
+        hostName = args[0];
+        port = Integer.parseInt(args[1]);
+        numberOfClients = Integer.parseInt(args[2]);
+    }
+
     public static void main(String[] args) throws Exception {
 
-        logger.log(Level.INFO, "Starting up server...");
+        // parse and setup command line arguments
+        parseArguments(args);
+        // setup keys in memory
+        String serverKeyFilePath = "../keys/server/";
+        // String serverKeyFilePath =
+        // "/Users/rupinjairaj/projects/utd/sem3/network_security/project/instant_messaging_system/keys/server/";
+        serverPrivateKey = Crypto.getPrivateKey(Crypto.readKeyFromFile(serverKeyFilePath + "rsa"));
+        for (int i = 0; i < numberOfClients; i++) {
+            String clientKeyFilePath = "/Users/rupinjairaj/projects/utd/sem3/network_security/project/instant_messaging_system/keys/client"
+                    + i + "/";
+            clientPublicKey.put(i, Crypto.getPublicKey(Crypto.readKeyFromFile(clientKeyFilePath + "rsa.pub")));
+        }
+
+        // setting up multiplexer
+        Selector selector = Selector.open();
+
+        System.out.println("Starting up server...");
         ServerSocketChannel serverSocketChannel = ServerSocketChannel.open();
         serverSocketChannel.configureBlocking(false);
 
-        serverSocketChannel.bind(new InetSocketAddress("localhost", 7000));
-        logger.log(Level.INFO, "Server up and running: " + serverSocketChannel);
+        serverSocketChannel.bind(new InetSocketAddress(hostName, port));
+        System.out.println("Server up and running: " + serverSocketChannel);
 
-        Selector selector = Selector.open();
         serverSocketChannel.register(selector, SelectionKey.OP_ACCEPT);
 
         while (active) {
-            int selected = selector.select();
-            logger.log(Level.INFO, "Selected: " + selected + " key(s)");
+            int selected = selector.select(); // blocking
+            System.out.println("Selected: " + selected + " key(s)");
 
             Iterator<SelectionKey> keysIterator = selector.selectedKeys().iterator();
             while (keysIterator.hasNext()) {
@@ -71,7 +97,7 @@ public class Server {
         }
 
         serverSocketChannel.close();
-        logger.log(Level.INFO, "Server shutting down.");
+        System.out.println("Server shutting down.");
     }
 
     private static void accept(Selector selector, SelectionKey key) throws Exception {
@@ -80,7 +106,7 @@ public class Server {
         SocketChannel socketChannel = serverSocketChannel.accept();
 
         if (socketChannel != null) {
-            logger.log(Level.INFO, "New connection accepted by server: " + socketChannel);
+            System.out.println("New connection accepted by server: " + socketChannel);
             socketChannel.configureBlocking(false);
             socketChannel.register(selector, SelectionKey.OP_READ);
         }
@@ -91,55 +117,64 @@ public class Server {
 
         ByteBuffer buffer = ByteBuffer.allocate(2048);
         int read = socketChannel.read(buffer);
-        logger.log(Level.INFO, "Server read '" + read + "' byte(s)");
+        System.out.println("Server read '" + read + "' byte(s)");
+        if (read == -1) {
+            socketChannel.close();
+            return;
+        }
 
         buffer.flip();
         byte[] bytes = new byte[buffer.limit()];
         buffer.get(bytes);
 
         String message = new String(bytes, StandardCharsets.UTF_8);
-        logger.log(Level.INFO, "Server received: " + message);
+        System.out.println("Server received: " + message);
 
         String[] payload = message.split("\\|");
-        if (payload.length == 0) {
-            return;
-        }
 
-        int clientID;
+        int clientID = Integer.parseInt(payload[2]);
+
         switch (payload[1]) {
             case "0":
-                // String payload = "|0|" + clientID + "|" + randomNumber + "|" +
-                // signedRandomNumber + "|" + hostName + "|" + port;
-                clientID = Integer.parseInt(payload[2]);
+                /**
+                 * incoming message:
+                 * |0|clientID|randomNumber|signedRandomNumber|hostName|port
+                 */
                 String randomNumber = payload[3];
                 String signedRandomNumber = payload[4];
                 String hostName = payload[5];
                 String port = payload[6];
-                if (Crypto.rsaVerify(randomNumber, signedRandomNumber,
-                        Crypto.getPublicKey(clientPublicKey.get(clientID)))) {
-                    // generate a session key here
-                    Key sessionKey = Crypto.generateSessionKey();
-
-                    PublicKey pu = Crypto.getPublicKey(clientPublicKey.get(clientID));
-
-                    // Encrypt the sessionKey with the client's public key
-                    String plainText = Base64.getEncoder().encodeToString(sessionKey.getEncoded());
-                    System.out.println("Session key: " + plainText);
-                    String encryptedSessionKey = Crypto.rsaEncrypt(plainText, pu);
-                    // String payload = "|0|" + encryptedSessionKey + "|1|";
-                    String response = encryptedSessionKey + "|" + "randomNumberEncrypted";
-                    message = Message.getS2CAuthResMsg(response);
-                    clientSessionKey.put(clientID, plainText);
-                    clientHostName.put(clientID, hostName);
-                    clientPort.put(clientID, port);
-                    clientStatus.put(clientID, true);
-                } else {
+                // authenticate the client
+                if (!Crypto.rsaVerify(randomNumber, signedRandomNumber, clientPublicKey.get(clientID))) {
                     message = Message.getS2CAuthResMsg("failed");
+                    break;
                 }
+
+                // generate a session key here for client-server communications
+                SecretKey sessionKey = Crypto.generateSessionKey();
+
+                PublicKey pu = clientPublicKey.get(clientID);
+                // Encrypt the sessionKey with the client's public key
+                String base64EncodedSessionKey = Base64.getEncoder().encodeToString(sessionKey.getEncoded());
+                System.out.println("Session key: " + base64EncodedSessionKey);
+                String encryptedSessionKey = Crypto.rsaEncrypt(base64EncodedSessionKey, pu);
+                // server's response:
+                // |3|encryptedSessionKey|randomNumberEncrypted|base64IvParameterSpec
+                IvParameterSpec iv = Crypto.generateIv();
+                String randomNumEncrypted = Crypto.aesEncrypt(randomNumber, iv, sessionKey);
+                String base64IvParameterSpec = Base64.getEncoder().encodeToString(iv.getIV());
+                String response = encryptedSessionKey + "|" + randomNumEncrypted + "|" + base64IvParameterSpec;
+                message = Message.getS2CAuthResMsg(response);
+                clientSessionKey.put(clientID, sessionKey);
+                clientHostName.put(clientID, hostName);
+                clientPort.put(clientID, port);
+                clientStatus.put(clientID, true);
                 break;
             case "1":
-                clientID = Integer.parseInt(payload[2]);
-
+                /**
+                 * incoming message:
+                 * |1|clientID
+                 */
                 StringBuilder sb = new StringBuilder();
                 for (Integer c_ID : clientStatus.keySet()) {
                     if (clientStatus.get(c_ID)) {
@@ -150,7 +185,26 @@ public class Server {
                 message = Message.getS2CPeerListResMsg(clientList, clientSessionKey.get(clientID));
                 break;
             case "2":
-                message = Message.getS2CPeerSessionResMsg("clientID1", "clientID2", "sessionKey");
+                /**
+                 * incoming message:
+                 * |2|clientID|encryptedPeerID|IV
+                 */
+                int sourcePeerID = clientID;
+                String encryptedDestPeerID = payload[3];
+                String iv_str = payload[4];
+                byte[] iv_byte = Base64.getDecoder().decode(iv_str);
+                String destPeerIDStr = Crypto.rollingDecrypt(encryptedDestPeerID, new IvParameterSpec(iv_byte),
+                        clientSessionKey.get(clientID));
+                int destPeerID = Integer.parseInt(destPeerIDStr);
+                message = Message.getS2CPeerSessionResMsg(sourcePeerID, destPeerID, clientSessionKey.get(sourcePeerID),
+                        clientSessionKey.get(destPeerID), clientPort.get(destPeerID), clientHostName.get(destPeerID));
+                break;
+            case "10":
+                /**
+                 * incoming message:
+                 * |10|clientID|busy
+                 */
+                clientStatus.put(clientID, false);
                 break;
             default:
                 break;
@@ -170,7 +224,7 @@ public class Server {
         buffer.get(bytes);
 
         String message = new String(bytes, StandardCharsets.UTF_8);
-        logger.log(Level.INFO, "Server sent: " + message);
+        System.out.println("Server sent: " + message);
         buffer.clear();
     }
 

@@ -1,9 +1,7 @@
-import java.security.Key;
 import java.util.Base64;
 
 import javax.crypto.SecretKey;
 import javax.crypto.spec.IvParameterSpec;
-import javax.crypto.spec.SecretKeySpec;
 
 public class Message {
 
@@ -38,10 +36,10 @@ public class Message {
      * |4|clientID1|clientID2|...
      * 
      * for messageType 5
-     * |5|clientID1|clientID2|sessionKey
+     * |5|clientID1|clientID2|base64SessionKey|
      * 
      * for messageType 6
-     * |6|clientID1|clientID2|sessionKey
+     * |6|clientID1|clientID2|sessionKey|destPort|destClientHostName
      * 
      * for messageType 7
      * |7|clientID1|clienID2|chatMessage
@@ -50,8 +48,7 @@ public class Message {
 
     // client payloads
     public static String getC2SAuthMsg(int clientID, String hostName, int port,
-            int randomNumber, String signedRandomNumber)
-            throws Exception {
+            int randomNumber, String signedRandomNumber) {
         String payload = "|0|" + clientID + "|" + randomNumber + "|" + signedRandomNumber + "|" + hostName + "|" + port;
         return payload;
     }
@@ -60,16 +57,20 @@ public class Message {
         return "|1|" + clientID;
     }
 
-    public static String getC2SPeerSessionReqMsg(String peerID) {
-        return "|2|" + peerID;
+    public static String getC2SPeerSessionReqMsg(int clientID, String peerID, SecretKey sessionKey) {
+        IvParameterSpec iv = Crypto.generateIv();
+        String cipherText = Crypto.rollingEncrypt(peerID, iv, sessionKey);
+        return "|2|" + clientID + "|" + cipherText + "|" + Base64.getEncoder().encodeToString(iv.getIV());
     }
 
-    public static String getP2PSessionMsg() {
-        return "";
+    // TODO: encrypt this payload
+    public static String getP2PSessionMsg(int clientID, String ticketForPeer) {
+        return "|6|" + clientID + "|" + ticketForPeer;
     }
 
-    public static String getP2PChatMsg() {
-        return "";
+    // TODO: encrypt this payload
+    public static String getP2PChatMsg(String chatMessage) {
+        return "|7|" + chatMessage;
     }
 
     // server payloads
@@ -77,16 +78,18 @@ public class Message {
         return "|3|" + message;
     }
 
-    public static String getS2CPeerListResMsg(String peerIDs, String base64EncodeSessionKey) throws Exception {
+    public static String getS2CPeerListResMsg(String peerIDs, SecretKey sessionKey) {
         IvParameterSpec iv = Crypto.generateIv();
-        byte[] decodedKey = Base64.getDecoder().decode(base64EncodeSessionKey);
-        SecretKey originalKey = new SecretKeySpec(decodedKey, 0, decodedKey.length, "AES");
-        String payload = Crypto.rollingEncrypt(peerIDs, iv, originalKey);
-        return "|4|" + payload + "|" + Base64.getEncoder().encodeToString(iv.getIV());
+        String peerIdCipherText = Crypto.rollingEncrypt(peerIDs, iv, sessionKey);
+        return "|4|" + peerIdCipherText + "|" + Base64.getEncoder().encodeToString(iv.getIV());
     }
 
-    public static String getS2CPeerSessionResMsg(String clientID1, String clientID2, String sessionKey) {
-        return "|5|" + clientID1 + "|" + clientID2 + "|" + sessionKey;
+    public static String getS2CPeerSessionResMsg(int clientID1, int clientID2, SecretKey srcClientSessionKey,
+            SecretKey destClientSessionKey, String desClientPort, String destClientHostName) {
+        SecretKey sessionKey = Crypto.generateSessionKey();
+        String base64EncodedSessionKey = Base64.getEncoder().encodeToString(sessionKey.getEncoded());
+        return "|5|" + clientID1 + "|" + clientID2 + "|" + base64EncodedSessionKey + "|" + desClientPort + "|"
+                + destClientHostName; // TODO: Encrypt this
     }
 
 }
