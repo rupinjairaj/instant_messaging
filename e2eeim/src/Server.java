@@ -6,7 +6,6 @@ import java.nio.channels.Selector;
 import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
 import java.nio.charset.StandardCharsets;
-import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.util.Base64;
 import java.util.HashMap;
@@ -24,7 +23,6 @@ public class Server {
     private static int port;
     private static int numberOfClients;
 
-    private static PrivateKey serverPrivateKey;
     // store session keys between clients and servers.
 
     private static Map<Integer, SecretKey> clientSessionKey = new HashMap<>();
@@ -50,13 +48,8 @@ public class Server {
         // parse and setup command line arguments
         parseArguments(args);
         // setup keys in memory
-        String serverKeyFilePath = "../keys/server/";
-        // String serverKeyFilePath =
-        // "/Users/rupinjairaj/projects/utd/sem3/network_security/project/instant_messaging_system/keys/server/";
-        serverPrivateKey = Crypto.getPrivateKey(Crypto.readKeyFromFile(serverKeyFilePath + "rsa"));
         for (int i = 0; i < numberOfClients; i++) {
-            String clientKeyFilePath = "/Users/rupinjairaj/projects/utd/sem3/network_security/project/instant_messaging_system/keys/client"
-                    + i + "/";
+            String clientKeyFilePath = "keys/client" + i + "/";
             clientPublicKey.put(i, Crypto.getPublicKey(Crypto.readKeyFromFile(clientKeyFilePath + "rsa.pub")));
         }
 
@@ -156,6 +149,7 @@ public class Server {
                 if (!Crypto.rsaVerify(randomNumber, signedRandomNumber, clientPublicKey.get(clientID))
                         && !Crypto.rsaVerify(hostName, signedHostName, clientPublicKey.get(clientID))
                         && !Crypto.rsaVerify(port, signedHostPort, clientPublicKey.get(clientID))) {
+                    System.out.println("Failed to verify client: " + clientID);
                     return;
                 }
 
@@ -199,15 +193,31 @@ public class Server {
                         clientSessionKey.get(clientID));
                 int destPeerID = Integer.parseInt(destPeerIDStr);
                 message = Message.getS2CPeerSessionResMsg(sourcePeerID, destPeerID, clientSessionKey.get(sourcePeerID),
-                        clientSessionKey.get(destPeerID), clientPort.get(destPeerID), clientHostName.get(destPeerID), ivParameterSpecString);
+                        clientSessionKey.get(destPeerID), clientPort.get(destPeerID), clientHostName.get(destPeerID),
+                        ivParameterSpecString);
                 socketChannel.register(selector, SelectionKey.OP_WRITE, ByteBuffer.wrap(message.getBytes()));
                 break;
-            case "10":
+            case "5":
                 /**
                  * incoming message:
-                 * |10|clientID|busy
+                 * |5|clientId|encrypted(status)|iv|hash(sessionKey|payload|sessionKey)
                  */
-                clientStatus.put(clientID, false);
+                // TODO: update client status
+                String encryptedStatus = payload[3];
+                String base64Iv = payload[3];
+                String base64CheckSum = payload[4];
+                byte[] ivBytes = Base64.getDecoder().decode(base64Iv);
+                String decryptedStatus = Crypto.rollingDecrypt(encryptedStatus, new IvParameterSpec(ivBytes),
+                        clientSessionKey.get(clientID));
+                // "|5|" + clientId + "|" + String.valueOf(status) + "|" +
+                // base64IvParameterSpec;
+                // |5|0|v0jW5g==|SUllXEu8NN27TcIz6Urxeg==|cPvjzgCFqgdCcsos8P0ilXMxKvgbHB9z5Fs1f32uQhM=
+                System.out.println("Client with ID: " + clientID + " is now " + decryptedStatus);
+                String localStatusCheckSumPayload = "|5|" + clientID + "|" + decryptedStatus + "|" + base64Iv;
+                if (!localStatusCheckSumPayload.equals(base64CheckSum)) {
+                    return;
+                }
+                clientStatus.put(clientID, Boolean.parseBoolean(decryptedStatus));
                 break;
             default:
                 break;

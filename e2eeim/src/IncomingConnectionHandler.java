@@ -19,16 +19,21 @@ import javax.crypto.spec.SecretKeySpec;
 public class IncomingConnectionHandler implements Runnable {
 
     private ServerSocketChannel clientServerSocketChannel;
+    private SocketChannel clientToServerSocketChannel;
     private String hostName;
     private int port;
+    private int clinetId;
     private SecretKey peerToPeerSecretKey;
     private SecretKey clientServerSecretKey;
     private int peerClientId;
 
-    public IncomingConnectionHandler(String hostName, int port, SecretKey clientServerSecretKey) {
+    public IncomingConnectionHandler(int clientId, String hostName, int port, SecretKey clientServerSecretKey,
+            SocketChannel clientToServerSocketChannel) {
+        this.clinetId = clientId;
         this.hostName = hostName;
         this.port = port;
         this.clientServerSecretKey = clientServerSecretKey;
+        this.clientToServerSocketChannel = clientToServerSocketChannel;
     }
 
     @Override
@@ -125,22 +130,32 @@ public class IncomingConnectionHandler implements Runnable {
                 // |3|p2pSessionKeyEncrypt(originalChallenge+1)|iv
                 message = Message.getP2PChallengeResMsg(p2pTime + 1, peerToPeerSecretKey);
                 socketChannel.register(localSelector, SelectionKey.OP_WRITE, ByteBuffer.wrap(message.getBytes()));
+
+                // Tell the server you are busy
+                // |5|clientId|encrypted(status)|iv|hash(sessionKey|payload|sessionKey)
+                message = Message.getC2SStatusUpdateMsg(clinetId, false, clientServerSecretKey);
+                clientToServerSocketChannel.write(ByteBuffer.wrap(message.getBytes()));
                 break;
             case "4":
                 /**
                  * incoming message:
                  * |4|encChatMsg|iv|checkSum
                  */
-
                 String encChat = payload[2];
-				String base64Iv = payload[3];
-				String chatCheckSum = payload[4]; // TODO: use this!
-				byte[] base64IvByte = Base64.getDecoder().decode(base64Iv);
-				String chatText = Crypto.rollingDecrypt(encChat, new IvParameterSpec(base64IvByte),
-						peerToPeerSecretKey);
-				System.out.println("Peer@" + peerClientId + ": " + chatText);
-				System.out.println("Enter your message: ");
-				chatText = waitAndHandleUserInput();
+                String base64Iv = payload[3];
+                String chatCheckSum = payload[4];
+                byte[] base64IvByte = Base64.getDecoder().decode(base64Iv);
+                String chatText = Crypto.rollingDecrypt(encChat, new IvParameterSpec(base64IvByte),
+                        peerToPeerSecretKey);
+                byte[] checkSumByte = Crypto.generateCheckSum(peerToPeerSecretKey.getEncoded(), chatText.getBytes());
+                String checkSum = Base64.getEncoder().encodeToString(checkSumByte);
+                if (!chatCheckSum.equals(checkSum)) {
+                    System.out.println("the message has been tampered with.");
+                    return;
+                }
+                System.out.println("Peer@" + peerClientId + ": " + chatText);
+                System.out.println("Enter your message: ");
+                chatText = waitAndHandleUserInput();
                 // |4|encChatMsg|iv|checkSum
                 message = Message.getP2PChatMsg(chatText, peerToPeerSecretKey);
                 socketChannel.register(localSelector, SelectionKey.OP_WRITE, ByteBuffer.wrap(message.getBytes()));
@@ -150,7 +165,7 @@ public class IncomingConnectionHandler implements Runnable {
             // * incoming message:
             // * |9|chatMessage
             // */
-            // // TODO: set the peerClientId to the value from the ticket
+            // set the peerClientId to the value from the ticket
             // System.out.println("Peer@" + this.peerClientId + ": " + payload[2]);
             // System.out.println("Enter your message: ");
             // message = "|9|" + waitAndHandleUserInput();

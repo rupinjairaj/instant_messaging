@@ -12,7 +12,6 @@ import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.security.SecureRandom;
 import java.sql.Timestamp;
-import java.time.Instant;
 import java.util.Base64;
 import java.util.Iterator;
 
@@ -221,8 +220,9 @@ public class IncomingMessageHandler implements Runnable {
 				}
 
 				// setting up the client's incoming connection handler thread
-				IncomingConnectionHandler peerListener = new IncomingConnectionHandler(clientHostName, clientPort,
-						clientServerSecretKey);
+				IncomingConnectionHandler peerListener = new IncomingConnectionHandler(clientID, clientHostName,
+						clientPort,
+						clientServerSecretKey, clientServerSocketChannel);
 				Thread listenerThread = new Thread(peerListener, "th_peerListener");
 				listenerThread.start();
 				System.out.println(
@@ -271,12 +271,18 @@ public class IncomingMessageHandler implements Runnable {
 				 */
 				String cipherText = payload[2];
 				String newIv = payload[3];
-				String newChecksum = payload[4]; // TODO: use this!
+				String newChecksum = payload[4];
 				byte[] newIvByte = Base64.getDecoder().decode(newIv);
-
 				// incomingIv|destPeerId|destHostName|destHostPort|p2pSessionKey|destPeerTicket|destIv
 				String plainText = Crypto.rollingDecrypt(cipherText, new IvParameterSpec(newIvByte),
 						clientServerSecretKey);
+				byte[] verifyCheckSumByte = Crypto.generateCheckSum(clientServerSecretKey.getEncoded(),
+						plainText.getBytes());
+				String verifyCheckSum = Base64.getEncoder().encodeToString(verifyCheckSumByte);
+				if (!verifyCheckSum.equals(newChecksum)) {
+					System.out.println("message has been tampered with.");
+					return;
+				}
 				String[] plainTextList = plainText.split("\\|");
 				peerClientId = Integer.parseInt(plainTextList[1]);
 				peerHostName = plainTextList[2];
@@ -325,16 +331,15 @@ public class IncomingMessageHandler implements Runnable {
 				byte[] challengeIvByte = Base64.getDecoder().decode(challengeIv);
 				String decryptedChallengeTime = Crypto.aesDecrypt(payload[2], new IvParameterSpec(challengeIvByte),
 						peerToPeerSecretKey);
-				System.out.println("LOOK HERE!!!!!!! " + decryptedChallengeTime);
 				if (p2pTime + 1 != Long.parseLong(decryptedChallengeTime)) {
 					return;
 				}
 
-				// TODO: tell the server you are busy
-				// message = "|10|" + clientID + "|busy";
-				// this.registerWithMultiplexer(clientServerSocketChannel, selector,
-				// SelectionKey.OP_WRITE,
-				// ByteBuffer.wrap(message.getBytes()));
+				// Tell the server you are busy
+				// |5|clientId|encrypted(status)|iv|hash(sessionKey|payload|sessionKey)
+				message = Message.getC2SStatusUpdateMsg(clientID, false, clientServerSecretKey);
+				this.registerWithMultiplexer(clientServerSocketChannel, selector, SelectionKey.OP_WRITE,
+						ByteBuffer.wrap(message.getBytes()));
 
 				// first chat message to peer
 				System.out.println("Enter your message: ");
@@ -351,10 +356,16 @@ public class IncomingMessageHandler implements Runnable {
 				 */
 				String encChat = payload[2];
 				String base64Iv = payload[3];
-				String chatCheckSum = payload[4]; // TODO: use this!
+				String chatCheckSum = payload[4];
 				byte[] base64IvByte = Base64.getDecoder().decode(base64Iv);
 				String chatText = Crypto.rollingDecrypt(encChat, new IvParameterSpec(base64IvByte),
 						peerToPeerSecretKey);
+				byte[] checkSumByte = Crypto.generateCheckSum(peerToPeerSecretKey.getEncoded(), chatText.getBytes());
+				String checkSumStr = Base64.getEncoder().encodeToString(checkSumByte);
+				if (!chatCheckSum.equals(checkSumStr)) {
+					System.out.println("the message has been tampered with.");
+					return;
+				}
 				System.out.println("Peer@" + peerClientId + ": " + chatText);
 				System.out.println("Enter your message: ");
 				chatText = waitAndHandleUserInput();

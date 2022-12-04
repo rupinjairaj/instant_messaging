@@ -3,7 +3,6 @@ import java.security.PublicKey;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.Base64;
-import java.util.HashMap;
 import java.util.Map;
 
 import javax.crypto.SecretKey;
@@ -42,6 +41,9 @@ public class Message {
      * 
      * ** 4 - p2p chat messages:
      * |4|encChatMsg|iv|checkSum;
+     * 
+     * ** 5 - client sends server their status
+     * |5|clientId|encrypted(status)|iv|hash(sessionKey|payload|sessionKey)
      */
     String payload;
 
@@ -71,6 +73,17 @@ public class Message {
         return responsePayload + "|" + base64EncodedCheckSum;
     }
 
+    public static String getC2SStatusUpdateMsg(int clientId, boolean status, SecretKey clientServerSessionKey) {
+        // |5|clientId|encrypted(status)|iv|hash(sessionKey|payload|sessionKey)
+        IvParameterSpec iv = Crypto.generateIv();
+        String statusCipher = Crypto.rollingEncrypt(status ? "idle" : "busy", iv, clientServerSessionKey);
+        String base64IvParameterSpec = Base64.getEncoder().encodeToString(iv.getIV());
+        String checkSumPayload = "|5|" + clientId + "|" + String.valueOf(status) + "|" + base64IvParameterSpec;
+        byte[] checkSum = Crypto.generateCheckSum(clientServerSessionKey.getEncoded(), checkSumPayload.getBytes());
+        String base64EncodedCheckSum = Base64.getEncoder().encodeToString(checkSum);
+        return "|5|" + clientId + "|" + statusCipher + "|" + base64IvParameterSpec + "|" + base64EncodedCheckSum;
+    }
+
     public static String getP2PSessionMsg(String ticketForPeer, String iv, SecretKey p2pSecretKey,
             long p2pTime) {
         // |2|ticketForPeer|iv|p2pSessionKeyEncrypted(timestamp)|timeEncIv
@@ -84,7 +97,6 @@ public class Message {
         // |3|p2pSessionKeyEncrypt(originalChallenge+1)|iv
         IvParameterSpec ivParameterSpec = Crypto.generateIv();
         String p2pTimeEnc = Crypto.aesEncrypt(Long.toString(p2pTimePlusOne), ivParameterSpec, p2pSecretKey);
-        System.out.println("LOOK HERE!!!!!!! " + p2pTimeEnc);
         return "|3|" + p2pTimeEnc + "|" + Base64.getEncoder().encodeToString(ivParameterSpec.getIV());
     }
 
@@ -107,7 +119,6 @@ public class Message {
         clientSessionKey.put(clientID, sessionKey);
         // Encrypt the sessionKey with the client's public key
         String base64EncodedSessionKey = Base64.getEncoder().encodeToString(sessionKey.getEncoded());
-        System.out.println("Session key: " + base64EncodedSessionKey); // TODO: remove this
         String encryptedSessionKey = Crypto.rsaEncrypt(base64EncodedSessionKey, key);
         IvParameterSpec iv = Crypto.generateIv();
         String randomNumMinus1Encrypted = Crypto.aesEncrypt(String.valueOf(randomNumber - 1),
@@ -155,7 +166,6 @@ public class Message {
         IvParameterSpec sourceIv = Crypto.generateIv();
         String sourcePeerRes = incomingIv + "|" + destPeerId + "|" + destPeerHostName + "|" + destPeerPort + "|"
                 + base64EncodedSessionKey + "|" + finalDestTicket;
-        System.out.println("Something fancy!!! " + sourcePeerRes);
         String sourcePeerResEnc = Crypto.rollingEncrypt(sourcePeerRes, sourceIv, srcClientSessionKey);
         byte[] checkSum = Crypto.generateCheckSum(srcClientSessionKey.getEncoded(), sourcePeerRes.getBytes());
         String base64EncodedCheckSum = Base64.getEncoder().encodeToString(checkSum);

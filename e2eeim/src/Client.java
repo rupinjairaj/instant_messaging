@@ -7,7 +7,6 @@ public class Client {
 
     private static PrivateKey clientPrivateKey;
     private static PublicKey clientPublicKey;
-    private static PublicKey serverPublicKey;
 
     private static int clientID;
     private static String clientHostName;
@@ -29,13 +28,10 @@ public class Client {
     }
 
     private static void setupKey() throws Exception {
-        String rsaKeyParentPath = "../keys";
-        // String rsaKeyParentPath = "/Users/rupinjairaj/projects/utd/sem3/network_security/project/instant_messaging_system/keys";
+        String rsaKeyParentPath = "keys";
         String clientKeyFilePath = rsaKeyParentPath + "/client" + clientID;
-        String serverKeyFilePath = rsaKeyParentPath + "/server";
         clientPrivateKey = Crypto.getPrivateKey(Crypto.readKeyFromFile(clientKeyFilePath + "/rsa"));
         clientPublicKey = Crypto.getPublicKey(Crypto.readKeyFromFile(clientKeyFilePath + "/rsa.pub"));
-        serverPublicKey = Crypto.getPublicKey(Crypto.readKeyFromFile(serverKeyFilePath + "/rsa.pub"));
     }
 
     public static void main(String[] args) throws Exception {
