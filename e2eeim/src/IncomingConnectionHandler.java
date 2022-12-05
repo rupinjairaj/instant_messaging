@@ -1,7 +1,9 @@
 import java.io.BufferedReader;
+import java.io.IOException;
 import java.io.InputStreamReader;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
+import java.nio.channels.ClosedChannelException;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
 import java.nio.channels.ServerSocketChannel;
@@ -51,14 +53,14 @@ public class IncomingConnectionHandler implements Runnable {
                 Iterator<SelectionKey> keysIterator = localSelector.selectedKeys().iterator();
                 while (keysIterator.hasNext()) {
                     SelectionKey key = keysIterator.next();
-                    if (key.isAcceptable()) {
+                    if (key.isValid() && key.isAcceptable()) {
                         accept(localSelector, key);
                     }
 
-                    if (key.isReadable()) {
+                    if (key.isValid() && key.isReadable()) {
                         requestHandler(localSelector, key);
                     }
-                    if (key.isWritable()) {
+                    if (key.isValid() && key.isWritable()) {
                         write(localSelector, key);
                     }
                     keysIterator.remove();
@@ -69,21 +71,30 @@ public class IncomingConnectionHandler implements Runnable {
         }
     }
 
-    private void write(Selector localSelector, SelectionKey key) throws Exception {
+    private void write(Selector localSelector, SelectionKey key) {
         SocketChannel socketChannel = (SocketChannel) key.channel();
         ByteBuffer buffer = (ByteBuffer) key.attachment();
-        socketChannel.write(buffer);
-        socketChannel.register(localSelector, SelectionKey.OP_READ);
+        try {
+            socketChannel.write(buffer);
+            socketChannel.register(localSelector, SelectionKey.OP_READ);
+        } catch (IOException e) {
+            System.out.println(e.getMessage());
+        }
     }
 
-    private void requestHandler(Selector localSelector, SelectionKey key) throws Exception {
+    private void requestHandler(Selector localSelector, SelectionKey key) {
         SocketChannel socketChannel = (SocketChannel) key.channel();
 
         ByteBuffer buffer = ByteBuffer.allocate(1024);
-        int read = socketChannel.read(buffer);
-        if (read == -1) {
-            socketChannel.close();
-            return;
+        int read;
+        try {
+            read = socketChannel.read(buffer);
+            if (read == -1) {
+                socketChannel.close();
+                return;
+            }
+        } catch (IOException e) {
+            System.out.println(e.getMessage());
         }
 
         buffer.flip();
@@ -129,12 +140,20 @@ public class IncomingConnectionHandler implements Runnable {
                 long p2pTime = Long.valueOf(decryptedTime);
                 // |3|p2pSessionKeyEncrypt(originalChallenge+1)|iv
                 message = Message.getP2PChallengeResMsg(p2pTime + 1, peerToPeerSecretKey);
-                socketChannel.register(localSelector, SelectionKey.OP_WRITE, ByteBuffer.wrap(message.getBytes()));
+                try {
+                    socketChannel.register(localSelector, SelectionKey.OP_WRITE, ByteBuffer.wrap(message.getBytes()));
+                } catch (ClosedChannelException e) {
+                    System.out.println(e.getMessage());
+                }
 
                 // Tell the server you are busy
                 // |5|clientId|encrypted(status)|iv|hash(sessionKey|payload|sessionKey)
                 message = Message.getC2SStatusUpdateMsg(clientId, false, clientServerSecretKey);
-                clientToServerSocketChannel.write(ByteBuffer.wrap(message.getBytes()));
+                try {
+                    clientToServerSocketChannel.write(ByteBuffer.wrap(message.getBytes()));
+                } catch (IOException e) {
+                    System.out.println(e.getMessage());
+                }
                 break;
             case "4":
                 /**
@@ -158,7 +177,11 @@ public class IncomingConnectionHandler implements Runnable {
                 chatText = waitAndHandleUserInput();
                 // |4|encChatMsg|iv|checkSum
                 message = Message.getP2PChatMsg(chatText, peerToPeerSecretKey);
-                socketChannel.register(localSelector, SelectionKey.OP_WRITE, ByteBuffer.wrap(message.getBytes()));
+                try {
+                    socketChannel.register(localSelector, SelectionKey.OP_WRITE, ByteBuffer.wrap(message.getBytes()));
+                } catch (ClosedChannelException e) {
+                    System.out.println(e.getMessage());
+                }
                 break;
             // case "9":
             // /**
@@ -177,19 +200,31 @@ public class IncomingConnectionHandler implements Runnable {
         }
     }
 
-    public static String waitAndHandleUserInput() throws Exception {
+    public static String waitAndHandleUserInput() {
         BufferedReader reader = new BufferedReader(new InputStreamReader(System.in));
-        String input = reader.readLine();
-        return input;
+        String input;
+        try {
+            input = reader.readLine();
+            return input;
+        } catch (IOException e) {
+            System.out.println(e.getMessage());
+            return "";
+        }
     }
 
-    private void accept(Selector locaSelector, SelectionKey key) throws Exception {
+    private void accept(Selector locaSelector, SelectionKey key) {
         ServerSocketChannel serverSocketChannel = (ServerSocketChannel) key.channel();
-        SocketChannel socketChannel = serverSocketChannel.accept();
-        if (socketChannel != null) {
-            System.out.println("New connection accepted by ClientIncomingConnectionListener.");
-            socketChannel.configureBlocking(false);
-            socketChannel.register(locaSelector, SelectionKey.OP_READ);
+        SocketChannel socketChannel;
+        try {
+            socketChannel = serverSocketChannel.accept();
+            if (socketChannel != null) {
+                System.out.println("New connection accepted by ClientIncomingConnectionListener.");
+                socketChannel.configureBlocking(false);
+                socketChannel.register(locaSelector, SelectionKey.OP_READ);
+            }
+        } catch (IOException e) {
+            System.out.println(e.getMessage());
         }
+
     }
 }

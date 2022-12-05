@@ -1,6 +1,7 @@
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
+import java.nio.channels.ClosedChannelException;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
 import java.nio.channels.ServerSocketChannel;
@@ -43,7 +44,7 @@ public class Server {
         numberOfClients = Integer.parseInt(args[2]);
     }
 
-    public static void main(String[] args) throws Exception {
+    public static void main(String[] args) {
 
         // parse and setup command line arguments
         parseArguments(args);
@@ -54,66 +55,89 @@ public class Server {
         }
 
         // setting up multiplexer
-        Selector selector = Selector.open();
-
+        Selector selector;
+        try {
+            selector = Selector.open();
+        } catch (IOException e) {
+            System.out.println(e.getMessage());
+            return;
+        }
         System.out.println("Starting up server...");
-        ServerSocketChannel serverSocketChannel = ServerSocketChannel.open();
-        serverSocketChannel.configureBlocking(false);
-
-        serverSocketChannel.bind(new InetSocketAddress(hostName, port));
-        System.out.println("Server up and running: " + serverSocketChannel);
-
-        serverSocketChannel.register(selector, SelectionKey.OP_ACCEPT);
+        ServerSocketChannel serverSocketChannel;
+        try {
+            serverSocketChannel = ServerSocketChannel.open();
+            serverSocketChannel.configureBlocking(false);
+            serverSocketChannel.bind(new InetSocketAddress(hostName, port));
+            System.out.println("Server up and running: " + serverSocketChannel);
+            serverSocketChannel.register(selector, SelectionKey.OP_ACCEPT);
+        } catch (IOException e1) {
+            System.out.println(e1.getMessage());
+        }
 
         while (active) {
-            int selected = selector.select(); // blocking
-            System.out.println("Selected: " + selected + " key(s)");
+            int selected;
+            try {
+                selected = selector.select();
+                System.out.println("Selected: " + selected + " key(s)");
+            } catch (IOException e) {
+                System.out.println(e.getMessage());
+            } // blocking
 
             Iterator<SelectionKey> keysIterator = selector.selectedKeys().iterator();
             while (keysIterator.hasNext()) {
                 SelectionKey key = keysIterator.next();
 
-                if (key.isAcceptable()) {
+                if (key.isValid() && key.isAcceptable()) {
                     accept(selector, key);
                 }
 
-                if (key.isReadable()) {
+                if (key.isValid() && key.isReadable()) {
                     requestHandler(selector, key);
                 }
 
-                if (key.isWritable()) {
+                if (key.isValid() && key.isWritable()) {
                     write(selector, key);
                 }
-
                 keysIterator.remove();
             }
         }
 
-        serverSocketChannel.close();
+        // serverSocketChannel.close();
+
         System.out.println("Server shutting down.");
     }
 
-    private static void accept(Selector selector, SelectionKey key) throws Exception {
+    private static void accept(Selector selector, SelectionKey key) {
 
         ServerSocketChannel serverSocketChannel = (ServerSocketChannel) key.channel();
-        SocketChannel socketChannel = serverSocketChannel.accept();
-
-        if (socketChannel != null) {
-            System.out.println("New connection accepted by server: " + socketChannel);
-            socketChannel.configureBlocking(false);
-            socketChannel.register(selector, SelectionKey.OP_READ);
+        SocketChannel socketChannel;
+        try {
+            socketChannel = serverSocketChannel.accept();
+            if (socketChannel != null) {
+                System.out.println("New connection accepted by server: " + socketChannel);
+                socketChannel.configureBlocking(false);
+                socketChannel.register(selector, SelectionKey.OP_READ);
+            }
+        } catch (IOException e) {
+            System.out.println(e.getMessage());
         }
     }
 
-    private static void requestHandler(Selector selector, SelectionKey key) throws Exception {
+    private static void requestHandler(Selector selector, SelectionKey key) {
         SocketChannel socketChannel = (SocketChannel) key.channel();
 
         ByteBuffer buffer = ByteBuffer.allocate(2048);
-        int read = socketChannel.read(buffer);
-        System.out.println("Server read '" + read + "' byte(s)");
-        if (read == -1) {
-            socketChannel.close();
-            return;
+        int read;
+        try {
+            read = socketChannel.read(buffer);
+            System.out.println("Server read '" + read + "' byte(s)");
+            if (read == -1) {
+                key.cancel();
+                socketChannel.close();
+                return;
+            }
+        } catch (IOException e) {
+            System.out.println(e.getMessage());
         }
 
         buffer.flip();
@@ -160,7 +184,11 @@ public class Server {
                 clientHostName.put(clientID, hostName);
                 clientPort.put(clientID, port);
                 clientStatus.put(clientID, true);
-                socketChannel.register(selector, SelectionKey.OP_WRITE, ByteBuffer.wrap(message.getBytes()));
+                try {
+                    socketChannel.register(selector, SelectionKey.OP_WRITE, ByteBuffer.wrap(message.getBytes()));
+                } catch (ClosedChannelException e) {
+                    System.out.println(e.getMessage());
+                }
                 break;
             case "1":
                 /**
@@ -176,7 +204,11 @@ public class Server {
                 String clientList = sb.toString();
                 // |1|encryptedClientList|iv|hash(sessionKey|payload|sessionKey)
                 message = Message.getS2CPeerListResMsg(clientList, clientSessionKey.get(clientID));
-                socketChannel.register(selector, SelectionKey.OP_WRITE, ByteBuffer.wrap(message.getBytes()));
+                try {
+                    socketChannel.register(selector, SelectionKey.OP_WRITE, ByteBuffer.wrap(message.getBytes()));
+                } catch (ClosedChannelException e) {
+                    System.out.println(e.getMessage());
+                }
                 break;
             case "2":
                 /**
@@ -195,7 +227,11 @@ public class Server {
                 message = Message.getS2CPeerSessionResMsg(sourcePeerID, destPeerID, clientSessionKey.get(sourcePeerID),
                         clientSessionKey.get(destPeerID), clientPort.get(destPeerID), clientHostName.get(destPeerID),
                         ivParameterSpecString);
-                socketChannel.register(selector, SelectionKey.OP_WRITE, ByteBuffer.wrap(message.getBytes()));
+                try {
+                    socketChannel.register(selector, SelectionKey.OP_WRITE, ByteBuffer.wrap(message.getBytes()));
+                } catch (ClosedChannelException e) {
+                    System.out.println(e.getMessage());
+                }
                 break;
             case "5":
                 /**
@@ -229,12 +265,20 @@ public class Server {
         }
     }
 
-    private static void write(Selector selector, SelectionKey key) throws IOException {
+    private static void write(Selector selector, SelectionKey key) {
         SocketChannel socketChannel = (SocketChannel) key.channel();
         ByteBuffer buffer = (ByteBuffer) key.attachment();
-        socketChannel.write(buffer);
+        try {
+            socketChannel.write(buffer);
+        } catch (IOException e1) {
+            System.out.println(e1.getMessage());
+        }
 
-        socketChannel.register(selector, SelectionKey.OP_READ);
+        try {
+            socketChannel.register(selector, SelectionKey.OP_READ);
+        } catch (ClosedChannelException e) {
+            System.out.println(e.getMessage());
+        }
 
         buffer.flip();
         byte[] bytes = new byte[buffer.limit()];
