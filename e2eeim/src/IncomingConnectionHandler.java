@@ -22,14 +22,14 @@ public class IncomingConnectionHandler implements Runnable {
     private SocketChannel clientToServerSocketChannel;
     private String hostName;
     private int port;
-    private int clinetId;
+    private int clientId;
     private SecretKey peerToPeerSecretKey;
     private SecretKey clientServerSecretKey;
     private int peerClientId;
 
     public IncomingConnectionHandler(int clientId, String hostName, int port, SecretKey clientServerSecretKey,
             SocketChannel clientToServerSocketChannel) {
-        this.clinetId = clientId;
+        this.clientId = clientId;
         this.hostName = hostName;
         this.port = port;
         this.clientServerSecretKey = clientServerSecretKey;
@@ -133,7 +133,7 @@ public class IncomingConnectionHandler implements Runnable {
 
                 // Tell the server you are busy
                 // |5|clientId|encrypted(status)|iv|hash(sessionKey|payload|sessionKey)
-                message = Message.getC2SStatusUpdateMsg(clinetId, false, clientServerSecretKey);
+                message = Message.getC2SStatusUpdateMsg(clientId, false, clientServerSecretKey);
                 clientToServerSocketChannel.write(ByteBuffer.wrap(message.getBytes()));
                 break;
             case "4":

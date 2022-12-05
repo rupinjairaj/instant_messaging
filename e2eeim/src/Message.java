@@ -75,10 +75,12 @@ public class Message {
 
     public static String getC2SStatusUpdateMsg(int clientId, boolean status, SecretKey clientServerSessionKey) {
         // |5|clientId|encrypted(status)|iv|hash(sessionKey|payload|sessionKey)
+        String statusText = status ? "idle" : "busy";
         IvParameterSpec iv = Crypto.generateIv();
-        String statusCipher = Crypto.rollingEncrypt(status ? "idle" : "busy", iv, clientServerSessionKey);
+        String statusCipher = Crypto.rollingEncrypt(statusText, iv, clientServerSessionKey);
+        System.out.println("In Message.java - statusCipher: " + statusCipher);
         String base64IvParameterSpec = Base64.getEncoder().encodeToString(iv.getIV());
-        String checkSumPayload = "|5|" + clientId + "|" + String.valueOf(status) + "|" + base64IvParameterSpec;
+        String checkSumPayload = "|5|" + clientId + "|" + statusText + "|" + base64IvParameterSpec;
         byte[] checkSum = Crypto.generateCheckSum(clientServerSessionKey.getEncoded(), checkSumPayload.getBytes());
         String base64EncodedCheckSum = Base64.getEncoder().encodeToString(checkSum);
         return "|5|" + clientId + "|" + statusCipher + "|" + base64IvParameterSpec + "|" + base64EncodedCheckSum;

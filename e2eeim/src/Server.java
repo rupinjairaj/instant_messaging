@@ -200,12 +200,12 @@ public class Server {
             case "5":
                 /**
                  * incoming message:
-                 * |5|clientId|encrypted(status)|iv|hash(sessionKey|payload|sessionKey)
+                 * |5|clientId|statusCipher|base64IvParameterSpec|base64EncodedCheckSum
                  */
                 // TODO: update client status
                 String encryptedStatus = payload[3];
-                String base64Iv = payload[3];
-                String base64CheckSum = payload[4];
+                String base64Iv = payload[4];
+                String base64CheckSum = payload[5];
                 byte[] ivBytes = Base64.getDecoder().decode(base64Iv);
                 String decryptedStatus = Crypto.rollingDecrypt(encryptedStatus, new IvParameterSpec(ivBytes),
                         clientSessionKey.get(clientID));
@@ -213,11 +213,16 @@ public class Server {
                 // base64IvParameterSpec;
                 // |5|0|v0jW5g==|SUllXEu8NN27TcIz6Urxeg==|cPvjzgCFqgdCcsos8P0ilXMxKvgbHB9z5Fs1f32uQhM=
                 System.out.println("Client with ID: " + clientID + " is now " + decryptedStatus);
+                // "|5|" + clientId + "|" + statusText + "|" + base64IvParameterSpec;
                 String localStatusCheckSumPayload = "|5|" + clientID + "|" + decryptedStatus + "|" + base64Iv;
-                if (!localStatusCheckSumPayload.equals(base64CheckSum)) {
+                byte[] checkSumByte = Crypto.generateCheckSum(clientSessionKey.get(clientID).getEncoded(),
+                        localStatusCheckSumPayload.getBytes());
+                String localStatusCheckSum = Base64.getEncoder().encodeToString(checkSumByte);
+                if (!localStatusCheckSum.equals(base64CheckSum)) {
+                    System.out.println("Check sum failed in case 5");
                     return;
                 }
-                clientStatus.put(clientID, Boolean.parseBoolean(decryptedStatus));
+                clientStatus.put(clientID, decryptedStatus.equals("idle"));
                 break;
             default:
                 break;
